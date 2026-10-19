@@ -40,7 +40,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
-import java.util.logging.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * binlog 增量订阅 → 幂等回放（Store）。
@@ -54,7 +55,7 @@ import java.util.logging.Logger;
  */
 public class BinlogStoreService implements BinaryLogClient.EventListener {
 
-    private static final Logger LOG = Logger.getLogger(BinlogStoreService.class.getName());
+    private static final Logger LOG = LoggerFactory.getLogger(BinlogStoreService.class);
 
     /**
      * @param maxReconnects         连续重连次数上限（超过即转 ERROR）
@@ -147,11 +148,15 @@ public class BinlogStoreService implements BinaryLogClient.EventListener {
                     }
                     return;
                 }
+                // 旧 client 可能还活着（connect() 返回不代表它已经停了），不关掉会堆积 keepalive 重连
+                disconnectQuietly();
+                client = null;
                 if (++attempt > reconnect.maxReconnects()) {
                     fail(new DtsException("重连 " + reconnect.maxReconnects() + " 次仍失败: " + message(lastError)));
                     return;
                 }
                 reconnects.incrementAndGet();
+                LOG.warn("binlog 订阅中断（第 {} 次重连），原因: {}", attempt, message(lastError));
                 backoff(attempt);
                 refreshAfterReconnect();
             }
@@ -234,7 +239,7 @@ public class BinlogStoreService implements BinaryLogClient.EventListener {
         } catch (Exception e) {
             lastError = e;
             consecutiveEventFailures++;
-            LOG.warning("增量事件处理失败（第 " + consecutiveEventFailures + " 次）: " + message(e));
+            LOG.warn("增量事件处理失败（第 {} 次）: {}", consecutiveEventFailures, message(e), e);
             if (consecutiveEventFailures > reconnect.maxReconnects()) {
                 fatal = e;      // 连续失败达上限：交给外层转 ERROR
                 running.set(false);
@@ -354,7 +359,7 @@ public class BinlogStoreService implements BinaryLogClient.EventListener {
             targetAdmin.journal(new DdlEvent(taskId, result.kind().name(), database, result.table(),
                     sql, currentGtid, applied, reason));
         } catch (Exception e) {
-            LOG.warning("DDL 台账写入失败（不阻断主流程）: " + message(e));
+            LOG.warn("DDL 台账写入失败（不阻断主流程）: {}", message(e), e);
         }
     }
 
@@ -362,7 +367,7 @@ public class BinlogStoreService implements BinaryLogClient.EventListener {
 
     void flushTx() throws Exception {
         if (currentGtid == null) {
-            LOG.warning("事务无 GTID（gtid_mode 未开？），跳过——环境预检应已拦截");
+            LOG.warn("事务无 GTID（gtid_mode 未开？），跳过——环境预检应已拦截");
             return;
         }
         try {
@@ -448,8 +453,12 @@ public class BinlogStoreService implements BinaryLogClient.EventListener {
         URI uri = URI.create(source.url().replaceFirst("^jdbc:", ""));
         BinaryLogClient c = new BinaryLogClient(
                 uri.getHost(), uri.getPort() == -1 ? 3306 : uri.getPort(), source.user(), source.password());
-        c.setServerId((int) (System.currentTimeMillis() % 100000) + 1);
-        c.setKeepAlive(true);
+        // serverId 必须稳定且尽量不撞：撞了 MySQL 会把对方踢下线，表现为「连上就断」。
+        // 用 taskId 派生（同一任务在任何节点上都是同一个 id，重复启动也不会互相踢）。
+        c.setServerId(Math.abs(taskId.hashCode()) % 100_000 + 1);
+        // 关掉客户端内置的 keepalive 重连：外层已有重连循环，两套重连会互相打断
+        //（实测现象：连上→立即返回→外层重连，前几次一直抖动）
+        c.setKeepAlive(false);
         String gtidSet = appliedGtids.isEmpty() ? currentGtidExecuted() : appliedGtids.serialize();
         c.setGtidSet(gtidSet);
         return c;

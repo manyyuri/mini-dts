@@ -13,7 +13,11 @@ import java.util.List;
 
 /**
  * 源库 binlog 环境预检——不满足直接拒绝建任务，而不是半夜同步挂掉。
- * 必须满足：log_bin=ON, binlog_format=ROW, binlog_row_image=FULL, gtid_mode=ON。
+ * 必须满足：log_bin=ON, binlog_format=ROW, binlog_row_image=FULL, gtid_mode=ON,
+ * 且账号要有 REPLICATION SLAVE / REPLICATION CLIENT 权限。
+ *
+ * 最后这条是血泪教训：没有 REPLICATION SLAVE 时，binlog 客户端会「连上就断」——
+ * 不抛异常、不打日志，表现为无限重连 + 一条数据都同步不过去，排查成本极高。
  */
 public final class MySqlEnvChecker {
 
@@ -33,6 +37,21 @@ public final class MySqlEnvChecker {
             String gtid = var(st, "@@gtid_mode");
             if (!"ON".equalsIgnoreCase(gtid)) {
                 problems.add("gtid_mode=" + gtid + "（需要 ON，断点续传依赖 GTID）");
+            }
+            // 权限检查：没有复制权限，dump 请求会被服务端直接拒绝（客户端侧表现为静默断开）
+            try (ResultSet rs = st.executeQuery("SHOW GRANTS FOR CURRENT_USER()")) {
+                boolean slave = false;
+                while (rs.next()) {
+                    String grant = rs.getString(1).toUpperCase(java.util.Locale.ROOT);
+                    if (grant.contains("REPLICATION SLAVE") || grant.contains("ALL PRIVILEGES")) {
+                        slave = true;
+                        break;
+                    }
+                }
+                if (!slave) {
+                    problems.add("账号缺少 REPLICATION SLAVE 权限（binlog 订阅会「连上就断」，且不报错）。"
+                            + "请执行：GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO '<user>'@'%'");
+                }
             }
             String logBin = var(st, "@@log_bin");
             if (!"1".equals(logBin) && !"ON".equalsIgnoreCase(logBin)) {

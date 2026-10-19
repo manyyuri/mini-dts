@@ -341,6 +341,9 @@ public class MigrationEngineImpl implements MigrationEngine, TaskStateNotifier {
                 m.put("incrDdlEvents", rt.store.ddlEvents.get());
                 m.put("incrReconnects", rt.store.reconnects.get());
                 m.put("incrRunning", rt.store.isRunning());
+                if (rt.store.failure() != null) {
+                    m.put("incrLastError", String.valueOf(rt.store.failure()));
+                }
             }
         }
         m.put("fullCheckpoints", countFullCheckpoints(t));

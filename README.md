@@ -58,11 +58,17 @@ mvn -pl mini-dts-starter spring-boot:run 2>&1 | grep -A6 "APPLICATION FAILED TO 
 | `Unable to open JDBC connection` / H2 锁 | 另一个进程占着 `./data/minidts-meta` | 停掉旧进程；H2 已开 `AUTO_SERVER=TRUE`，一般可共享 |
 
 ```bash
-# 建任务（源库需 binlog_format=ROW, binlog_row_image=FULL, gtid_mode=ON）
-# 注意：sourceUrl / targetUrl 的库名必须与 schema 一致（否则建任务即失败）
+# 建任务。前提（都在 createTask 里检查，不满足直接拒绝）：
+#   1. 源库 log_bin=ON / binlog_format=ROW / binlog_row_image=FULL / gtid_mode=ON
+#   2. 源库账号有 REPLICATION SLAVE + REPLICATION CLIENT 权限
+#      （少了它 binlog 会「连上就断」且不报错，最难查）
+#   3. 源库名 == 目标库名 == schema
+#   4. 目标表已存在且结构与源一致（列名/类型/可空性）
+#
+# 下面的 src / tgt 是**占位符**，换成真实地址；本机起了两个容器就是 127.0.0.1:3306 / :3307
 curl -X POST localhost:8080/api/tasks -H 'Content-Type: application/json' -d '{
-  "sourceUrl":"jdbc:mysql://src:3306/shop","sourceUser":"u","sourcePassword":"p",
-  "targetUrl":"jdbc:mysql://tgt:3306/shop","targetUser":"u","targetPassword":"p",
+  "sourceUrl":"jdbc:mysql://127.0.0.1:3306/shop","sourceUser":"u","sourcePassword":"p",
+  "targetUrl":"jdbc:mysql://127.0.0.1:3307/shop","targetUser":"u","targetPassword":"p",
   "schema":"shop","tables":["orders"],"chunkSize":1000,"parallelism":4,"rowsPerSecond":50000}'
 
 curl -X POST localhost:8080/api/tasks/{id}/start    # INIT → 全量 → 自动进增量
