@@ -23,6 +23,17 @@ public final class TaskStateMachine {
             TaskState.ERROR, Set.of(TaskState.RUNNING_FULL, TaskState.RUNNING_INCR),
             TaskState.FINISHED, Set.of());
 
+    /**
+     * 同态重挂：进程重启 / 节点接管时，DB 里记录的运行态就是目标态，此时"迁移到自己"是合法动作。
+     * 与 {@link #transition} 分开，是为了不放松正常流转的校验（自迁移在任何业务动作里都没有意义）。
+     */
+    public static void reattach(TaskState from, TaskState to) {
+        if (from == to) {
+            return;
+        }
+        transition(from, to);
+    }
+
     public static void transition(TaskState from, TaskState to) {
         if (from == to) {
             throw new DtsException("状态自迁移无意义: " + from);

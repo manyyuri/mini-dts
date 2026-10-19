@@ -34,6 +34,16 @@ class TaskStateMachineTest {
     }
 
     @Test
+    void reattachAllowsSameStateForCrashRecovery() {
+        // 崩溃/接管后 DB 里记的就是运行态：允许“迁移到自己”
+        assertDoesNotThrow(() -> TaskStateMachine.reattach(TaskState.RUNNING_INCR, TaskState.RUNNING_INCR));
+        assertDoesNotThrow(() -> TaskStateMachine.reattach(TaskState.RUNNING_FULL, TaskState.RUNNING_FULL));
+        assertDoesNotThrow(() -> TaskStateMachine.reattach(TaskState.PAUSED, TaskState.RUNNING_INCR));
+        assertThrows(DtsException.class, () -> TaskStateMachine.reattach(TaskState.FINISHED, TaskState.RUNNING_INCR));
+        assertThrows(DtsException.class, () -> TaskStateMachine.reattach(TaskState.INIT, TaskState.RUNNING_INCR));
+    }
+
+    @Test
     void resumeTarget() {
         assertEquals(TaskState.RUNNING_FULL, TaskStateMachine.resumeTo(false));
         assertEquals(TaskState.RUNNING_INCR, TaskStateMachine.resumeTo(true));

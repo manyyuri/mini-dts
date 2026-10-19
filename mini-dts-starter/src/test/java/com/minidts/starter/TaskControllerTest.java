@@ -57,7 +57,7 @@ class TaskControllerTest {
 
             @Override public void pause(String taskId) { tasks.updateState(taskId, TaskState.PAUSED, false, null); }
             @Override public void resume(String taskId) { tasks.updateState(taskId, TaskState.RUNNING_FULL, false, null); }
-            @Override public void finish(String taskId) { tasks.updateState(taskId, TaskState.FINISHED, true, null); }
+            @Override public void finish(String taskId) { tasks.updateState(taskId, TaskState.FINISHED, true, null); } @Override public boolean reattach(String taskId) { return false; }
             @Override public Map<String, Object> verify(String taskId) { return Map.of("allEqual", true); }
             @Override public Map<String, Object> metrics(String taskId) { return Map.of("state", "INIT"); }
         };

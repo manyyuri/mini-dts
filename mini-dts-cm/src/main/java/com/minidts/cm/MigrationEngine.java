@@ -19,6 +19,12 @@ public interface MigrationEngine {
     /** 从 PAUSED/ERROR 恢复（按记录的阶段续跑：断点续传）。 */
     void resume(String taskId);
 
+    /**
+     * 节点接管：DB 里状态是 RUNNING_* 但本节点没有运行时（进程重启 / 原节点挂了）。
+     * 抢到租约才接管，按记录的阶段从断点续跑；返回 false 表示本节点不该接（别人持有 / 状态不匹配）。
+     */
+    boolean reattach(String taskId);
+
     /** 增量期收尾：停止订阅（目标库此时已追平）。 */
     void finish(String taskId);
 

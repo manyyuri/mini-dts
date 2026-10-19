@@ -1,7 +1,7 @@
 package com.minidts.starter;
 
-import com.minidts.cm.FullCheckpointRepository;
 import com.minidts.cm.MigrationEngine;
+import com.minidts.cm.TaskLeaseManager;
 import com.minidts.cm.TaskMetadata;
 import com.minidts.cm.TaskRepository;
 import com.minidts.cm.TaskState;
@@ -10,11 +10,17 @@ import com.minidts.cm.VerifyReportRepository;
 import com.minidts.common.Connections;
 import com.minidts.common.DbEndpoint;
 import com.minidts.common.DtsException;
+import com.minidts.common.GlobalRateLimiter;
+import com.minidts.common.JdbcUrl;
 import com.minidts.common.MasterStatusReader;
 import com.minidts.common.PkCodec;
 import com.minidts.common.PkResolver;
+import com.minidts.common.RateLimiter;
+import com.minidts.common.SchemaFingerprint;
 import com.minidts.common.TaskStateNotifier;
 import com.minidts.connector.MySqlSink;
+import com.minidts.connector.TargetAdminImpl;
+import com.minidts.connector.TargetFullCheckpointStore;
 import com.minidts.connector.TargetSchemaInit;
 import com.minidts.full.FullTransferService;
 import com.minidts.store.BinlogStoreService;
@@ -27,7 +33,11 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Logger;
 
 /**
  * 控制面编排：装配 common/connector/full/store/verifier 各数据面模块。
@@ -37,21 +47,78 @@ import java.util.concurrent.ConcurrentHashMap;
  *  2. 全量：数据先写、断点后落
  *  3. 全量完成 → 增量从【一致性位点】起播（覆盖全量窗口内的所有写入，幂等收敛）
  *  4. 增量事务：数据 + dts_incr_checkpoint 同事务（R4）
+ *
+ * 多节点契约（不再是单机玩具的部分）：
+ *  - 谁能跑某个任务由 {@link TaskLeaseManager} 的租约决定，不靠进程内 synchronized
+ *  - 全量断点在目标库、增量位点在目标库 —— 换节点接管都能接着跑
+ *  - 进程重启后 start 恢复扫描把 RUNNING_* 的任务重挂回来（{@link #reattach}）
+ *  - 实例级全局限流 + 任务并发上限，避免多任务叠加速度把源库打穿
  */
 public class MigrationEngineImpl implements MigrationEngine, TaskStateNotifier {
 
+    private static final Logger LOG = Logger.getLogger(MigrationEngineImpl.class.getName());
+
     private final TaskRepository tasks;
-    private final FullCheckpointRepository checkpoints;
     private final VerifyReportRepository verifyReports;
+    private final TaskLeaseManager leases;
+    private final GlobalRateLimiter globalLimiter;
+    private final EngineProperties props;
+
     private final Map<String, Runtime> runtimes = new ConcurrentHashMap<>();
+    private final Set<String> slots = ConcurrentHashMap.newKeySet();
 
-    record Runtime(FullTransferService full, BinlogStoreService store) {}
+    /** 一个任务的运行时资源：目标端管理连接、全量断点连接、当前数据面服务。 */
+    static final class Runtime implements AutoCloseable {
+        private final TargetAdminImpl admin;
+        private final Connection checkpointConnection;
+        private final TargetFullCheckpointStore checkpoints;
+        private final Map<String, List<String>> pkByTable;
+        private final String targetSchema;
+        volatile FullTransferService full;
+        volatile BinlogStoreService store;
 
-    public MigrationEngineImpl(TaskRepository tasks, FullCheckpointRepository checkpoints,
-                               VerifyReportRepository verifyReports) {
+        Runtime(TargetAdminImpl admin, Connection checkpointConnection,
+                TargetFullCheckpointStore checkpoints, Map<String, List<String>> pkByTable, String targetSchema) {
+            this.admin = admin;
+            this.checkpointConnection = checkpointConnection;
+            this.checkpoints = checkpoints;
+            this.pkByTable = pkByTable;
+            this.targetSchema = targetSchema;
+        }
+
+        @Override
+        public void close() {
+            FullTransferService f = full;
+            if (f != null) {
+                f.stop();
+            }
+            BinlogStoreService s = store;
+            if (s != null) {
+                s.stop();
+            }
+            closeQuietly(checkpointConnection);
+            if (admin != null) {
+                admin.close();
+            }
+        }
+
+        private static void closeQuietly(AutoCloseable c) {
+            try {
+                if (c != null) {
+                    c.close();
+                }
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    public MigrationEngineImpl(TaskRepository tasks, VerifyReportRepository verifyReports,
+                               TaskLeaseManager leases, GlobalRateLimiter globalLimiter, EngineProperties props) {
         this.tasks = tasks;
-        this.checkpoints = checkpoints;
         this.verifyReports = verifyReports;
+        this.leases = leases;
+        this.globalLimiter = globalLimiter;
+        this.props = props;
     }
 
     // ── 创建 ─────────────────────────────────────────────────────
@@ -61,23 +128,29 @@ public class MigrationEngineImpl implements MigrationEngine, TaskStateNotifier {
         if (req.sourceUrl() == null || req.targetUrl() == null || req.schema() == null) {
             throw new DtsException("sourceUrl / targetUrl / schema 必填");
         }
+        requireSameDatabase(req.sourceUrl(), req.schema(), "sourceUrl");
+        requireSameDatabase(req.targetUrl(), req.schema(), "targetUrl");
+
         DbEndpoint source = new DbEndpoint(req.sourceUrl(), req.sourceUser(), req.sourcePassword());
         DbEndpoint target = new DbEndpoint(req.targetUrl(), req.targetUser(), req.targetPassword());
 
         MySqlEnvChecker.check(source);   // ROW / FULL / GTID —— 不满足直接拒绝建任务
 
-        List<String> tables = req.tables() == null ? List.of() : req.tables().stream().filter(s -> !s.isBlank()).toList();
+        List<String> tables = req.tables() == null
+                ? List.of() : req.tables().stream().filter(s -> !s.isBlank()).toList();
+        Map<String, String> fingerprints = new LinkedHashMap<>();
         try (Connection src = Connections.open(source); Connection tgt = Connections.open(target)) {
             if (tables.isEmpty()) {
                 tables = listAllTables(src, req.schema());
             }
-            if (tables.isEmpty()) throw new DtsException("schema " + req.schema() + " 下没有基表");
+            if (tables.isEmpty()) {
+                throw new DtsException("schema " + req.schema() + " 下没有基表");
+            }
             for (String t : tables) {
                 List<String> srcPk = PkResolver.resolvePkColumns(src, req.schema(), t);
                 List<String> tgtPk = PkResolver.resolvePkColumns(tgt, req.schema(), t);
                 if (!srcPk.equals(tgtPk)) {
-                    throw new DtsException("主键不一致（幂等写前提）: " + t
-                            + " 源=" + srcPk + " 目标=" + tgtPk);
+                    throw new DtsException("主键不一致（幂等写前提）: " + t + " 源=" + srcPk + " 目标=" + tgtPk);
                 }
                 if (srcPk.size() > 1) {
                     throw new DtsException("复合主键暂不支持: " + t + " " + srcPk);
@@ -86,8 +159,15 @@ public class MigrationEngineImpl implements MigrationEngine, TaskStateNotifier {
                 if (!PkCodec.supported(type)) {
                     throw new DtsException("主键类型不支持: " + t + "." + type);
                 }
+                String srcFp = SchemaFingerprint.read(src, req.schema(), t);
+                String tgtFp = SchemaFingerprint.read(tgt, req.schema(), t);
+                if (!srcFp.equals(tgtFp)) {
+                    throw new DtsException("表结构不一致（迁移前提）: " + t
+                            + "\n 源=" + SchemaFingerprint.columns(src, req.schema(), t)
+                            + "\n 目标=" + SchemaFingerprint.columns(tgt, req.schema(), t));
+                }
+                fingerprints.put(t, srcFp);
             }
-            TargetSchemaInit.ensure(tgt);   // dts_incr_checkpoint / dts_dead_letter 建在目标库（R2）
         } catch (DtsException e) {
             throw e;
         } catch (Exception e) {
@@ -95,6 +175,7 @@ public class MigrationEngineImpl implements MigrationEngine, TaskStateNotifier {
         }
 
         String id = "t" + Long.toString(System.currentTimeMillis(), 36);
+        String now = java.time.LocalDateTime.now().withNano(0).toString();
         TaskMetadata meta = new TaskMetadata(id,
                 req.sourceUrl(), req.sourceUser(), req.sourcePassword(),
                 req.targetUrl(), req.targetUser(), req.targetPassword(),
@@ -102,10 +183,13 @@ public class MigrationEngineImpl implements MigrationEngine, TaskStateNotifier {
                 req.chunkSize() <= 0 ? 1000 : req.chunkSize(),
                 req.parallelism() <= 0 ? 4 : req.parallelism(),
                 req.rowsPerSecond() <= 0 ? 50_000 : req.rowsPerSecond(),
-                TaskState.INIT, false, null, null,
-                java.time.LocalDateTime.now().withNano(0).toString(),
-                java.time.LocalDateTime.now().withNano(0).toString());
+                TaskState.INIT, false, null, null, now, now);
         tasks.insert(meta);
+
+        // 结构指纹登记在目标库：增量期任何时候发现源端结构变了，都能在开始写之前拦住
+        try (TargetAdminImpl admin = TargetAdminImpl.open(target)) {
+            admin.putFingerprints(id, fingerprints);
+        }
         return id;
     }
 
@@ -118,12 +202,14 @@ public class MigrationEngineImpl implements MigrationEngine, TaskStateNotifier {
             throw new DtsException("任务已在运行中");
         }
         if (t.state() == TaskState.INIT) {
+            acquire(taskId);
             TaskStateMachine.transition(t.state(), TaskState.RUNNING_FULL);
             String consistency = readConsistency(t);
             tasks.updateConsistencyGtid(taskId, consistency);
             tasks.updateState(taskId, TaskState.RUNNING_FULL, false, null);
             launchFull(t.withFullDone(false, consistency));
         } else if (t.state() == TaskState.FULL_DONE) {
+            acquire(taskId);
             TaskStateMachine.transition(t.state(), TaskState.RUNNING_INCR);
             tasks.updateState(taskId, TaskState.RUNNING_INCR, true, null);
             launchIncr(t, t.consistencyGtid());
@@ -136,39 +222,63 @@ public class MigrationEngineImpl implements MigrationEngine, TaskStateNotifier {
     public synchronized void pause(String taskId) {
         TaskMetadata t = load(taskId);
         TaskStateMachine.transition(t.state(), TaskState.PAUSED);
-        Runtime rt = runtimes.get(taskId);
-        if (rt != null) {
-            if (rt.full() != null) rt.full().stop();
-            if (rt.store() != null) rt.store().stop();
-        }
         tasks.updateState(taskId, TaskState.PAUSED, t.fullDone(), null);
+        stopRuntime(taskId);
     }
 
     @Override
     public synchronized void resume(String taskId) {
         TaskMetadata t = load(taskId);
+        if (runtimes.containsKey(taskId)) {
+            throw new DtsException("任务已有运行时，无需 resume");
+        }
         TaskState to = TaskStateMachine.resumeTo(t.fullDone());
-        TaskStateMachine.transition(t.state(), to);
+        // reattach 而不是 transition：崩溃后残留的 RUNNING_* 允许原地重挂
+        TaskStateMachine.reattach(t.state(), to);
+        acquire(taskId);
+        tasks.updateState(taskId, to, t.fullDone(), null);
         if (to == TaskState.RUNNING_FULL) {
-            tasks.updateState(taskId, TaskState.RUNNING_FULL, false, null);
             launchFull(t);
         } else {
-            String resumeGtid = incrResumePoint(t);
-            tasks.updateState(taskId, TaskState.RUNNING_INCR, true, null);
-            launchIncr(t, resumeGtid);
+            launchIncr(t, incrResumePoint(t));
         }
+    }
+
+    @Override
+    public synchronized boolean reattach(String taskId) {
+        TaskMetadata t = tasks.find(taskId).orElse(null);
+        if (t == null) {
+            return false;
+        }
+        if (t.state() != TaskState.RUNNING_FULL && t.state() != TaskState.RUNNING_INCR) {
+            return false;
+        }
+        if (runtimes.containsKey(taskId)) {
+            return false;                       // 本节点已经在跑
+        }
+        if (slots.size() >= props.maxConcurrentTasks()) {
+            LOG.warning("并发上限已满，接管延后: " + taskId);
+            return false;
+        }
+        if (!leases.acquire(taskId)) {
+            LOG.info("任务 " + taskId + " 的租约在别的节点（" + leases.owner(taskId).orElse("?") + "），本节点不接管");
+            return false;
+        }
+        slots.add(taskId);
+        if (t.state() == TaskState.RUNNING_INCR) {
+            launchIncr(t, incrResumePoint(t));
+        } else {
+            launchFull(t);
+        }
+        return true;
     }
 
     @Override
     public synchronized void finish(String taskId) {
         TaskMetadata t = load(taskId);
         TaskStateMachine.transition(t.state(), TaskState.FINISHED);
-        Runtime rt = runtimes.get(taskId);
-        if (rt != null && rt.store() != null) {
-            rt.store().stop();
-        }
         tasks.updateState(taskId, TaskState.FINISHED, true, null);
-        runtimes.remove(taskId);
+        stopRuntime(taskId);
     }
 
     @Override
@@ -187,7 +297,9 @@ public class MigrationEngineImpl implements MigrationEngine, TaskStateNotifier {
             per.put("chunks", s.chunks());
             per.put("equal", s.equalChunks());
             per.put("mismatched", s.mismatchedChunks());
-            if (!s.allEqual()) per.put("diffs", s.diffs().stream().map(String::valueOf).limit(50).toList());
+            if (!s.allEqual()) {
+                per.put("diffs", s.diffs().stream().map(String::valueOf).limit(50).toList());
+            }
             out.put(table, per);
         }
         out.put("allEqual", allEqual);
@@ -200,20 +312,27 @@ public class MigrationEngineImpl implements MigrationEngine, TaskStateNotifier {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("state", t.state().name());
         m.put("fullDone", t.fullDone());
-        m.put("fullCheckpoints", checkpoints.countDone(taskId));
+        m.put("node", leases.nodeId());
+        m.put("leaseOwner", leases.owner(taskId).orElse(null));
         Runtime rt = runtimes.get(taskId);
         if (rt != null) {
-            if (rt.full() != null) {
-                m.put("rowsCopied", rt.full().rowsCopied.get());
-                m.put("chunksDone", rt.full().chunksDone.get());
-                m.put("chunksSkipped", rt.full().chunksSkipped.get());
+            if (rt.full != null) {
+                m.put("rowsCopied", rt.full.rowsCopied.get());
+                m.put("chunksDone", rt.full.chunksDone.get());
+                m.put("chunksSkipped", rt.full.chunksSkipped.get());
             }
-            if (rt.store() != null) {
-                m.put("incrTxApplied", rt.store().txApplied.get());
+            if (rt.store != null) {
+                m.put("incrTxApplied", rt.store.txApplied.get());
+                m.put("incrDdlEvents", rt.store.ddlEvents.get());
+                m.put("incrReconnects", rt.store.reconnects.get());
+                m.put("incrRunning", rt.store.isRunning());
             }
         }
+        m.put("fullCheckpoints", countFullCheckpoints(t));
         String ckpt = incrResumePointQuiet(t);
-        if (ckpt != null) m.put("incrCheckpointGtid", ckpt);
+        if (ckpt != null) {
+            m.put("incrCheckpointGtid", ckpt);
+        }
         m.put("verifyDiffs", verifyReports.diffCount(taskId));
         return m;
     }
@@ -224,7 +343,7 @@ public class MigrationEngineImpl implements MigrationEngine, TaskStateNotifier {
     public void onFullDone(String taskId) {
         TaskMetadata t = load(taskId);
         if (t.state() != TaskState.RUNNING_FULL) {
-            return; // 已被 pause / 重复回调
+            return;   // 已被 pause / 重复回调
         }
         TaskStateMachine.transition(TaskState.RUNNING_FULL, TaskState.FULL_DONE);
         tasks.updateState(taskId, TaskState.FULL_DONE, true, null);
@@ -237,25 +356,76 @@ public class MigrationEngineImpl implements MigrationEngine, TaskStateNotifier {
     @Override
     public void onError(String taskId, String reason) {
         TaskMetadata t = tasks.find(taskId).orElse(null);
-        if (t == null || t.state() == TaskState.FINISHED) return;
+        if (t == null || t.state() == TaskState.FINISHED) {
+            return;
+        }
         try {
             TaskStateMachine.transition(t.state(), TaskState.ERROR);
             tasks.updateState(taskId, TaskState.ERROR, t.fullDone(), reason);
         } catch (DtsException ignored) {
             // PAUSED/FINISHED 下的迟到失败回调：保留现场，不改状态
         }
+        stopRuntime(taskId);
+    }
+
+    /** 源端结构变更：转 PAUSED 等人工确认（不是 ERROR —— 数据可能没坏，只是需要人看一眼）。 */
+    @Override
+    public void onSchemaChange(String taskId, String detail) {
+        TaskMetadata t = tasks.find(taskId).orElse(null);
+        if (t == null) {
+            return;
+        }
+        try {
+            TaskStateMachine.transition(t.state(), TaskState.PAUSED);
+            tasks.updateState(taskId, TaskState.PAUSED, t.fullDone(), "源端结构变更，待人工处理: " + detail);
+        } catch (DtsException e) {
+            tasks.updateState(taskId, t.state(), t.fullDone(), "源端结构变更: " + detail);
+        }
+        stopRuntime(taskId);
+    }
+
+    // ── 租约 / 并发槽 ────────────────────────────────────────────
+
+    /** 续租；返回丢失了租约的任务（别的节点接管了，本节点必须停手）。 */
+    public Set<String> renewLeases() {
+        Set<String> lost = leases.renewAll();
+        for (String taskId : lost) {
+            LOG.warning("任务 " + taskId + " 租约丢失（已被接管），停止本节点运行时");
+            stopRuntime(taskId);
+        }
+        return lost;
+    }
+
+    private void acquire(String taskId) {
+        if (!slots.contains(taskId) && slots.size() >= props.maxConcurrentTasks()) {
+            throw new DtsException("并发任务上限已达 " + props.maxConcurrentTasks() + "，请稍后重试");
+        }
+        if (!leases.acquire(taskId)) {
+            throw new DtsException("任务 " + taskId + " 正被节点 " + leases.owner(taskId).orElse("?")
+                    + " 持有（租约 " + props.leaseTtl().toSeconds() + "s），拒绝重复启动");
+        }
+        slots.add(taskId);
+    }
+
+    private void stopRuntime(String taskId) {
+        leases.release(taskId);
+        slots.remove(taskId);
+        Runtime rt = runtimes.remove(taskId);
+        if (rt != null) {
+            rt.close();
+        }
     }
 
     // ── 内部装配 ──────────────────────────────────────────────────
 
     private void launchFull(TaskMetadata t) {
-        int totalTables = t.tables().size();
-        java.util.concurrent.atomic.AtomicInteger completed = new java.util.concurrent.atomic.AtomicInteger();
-        // 多表聚合：所有表都完成才推进状态（单表时退化为直接回调）
+        Runtime rt = runtime(t);
+        List<String> tables = t.tables();
+        AtomicInteger completed = new AtomicInteger();
         TaskStateNotifier agg = new TaskStateNotifier() {
             @Override
             public void onFullDone(String taskId) {
-                if (completed.incrementAndGet() == totalTables) {
+                if (completed.incrementAndGet() == tables.size()) {
                     MigrationEngineImpl.this.onFullDone(taskId);
                 }
             }
@@ -265,50 +435,69 @@ public class MigrationEngineImpl implements MigrationEngine, TaskStateNotifier {
                 MigrationEngineImpl.this.onError(taskId, reason);
             }
         };
-        FullTransferService first = fullServiceFor(t, t.tables().get(0), agg);
         Thread thread = new Thread(() -> {
             try {
-                first.run();
-                for (int i = 1; i < totalTables; i++) {
-                    if (load(t.id()).state() != TaskState.RUNNING_FULL) return; // 被暂停/出错
-                    FullTransferService svc = fullServiceFor(t, t.tables().get(i), agg);
-                    runtimes.put(t.id(), new Runtime(svc, null));
+                for (int i = 0; i < tables.size(); i++) {
+                    TaskMetadata cur = load(t.id());
+                    if (cur.state() != TaskState.RUNNING_FULL) {
+                        return;   // 被暂停 / 出错
+                    }
+                    FullTransferService svc = fullServiceFor(cur, tables.get(i), agg);
+                    rt.full = svc;
                     svc.run();
                 }
             } catch (Exception e) {
-                onError(t.id(), e.getMessage());
+                onError(t.id(), e.getMessage() == null ? e.toString() : e.getMessage());
             }
         }, "full-" + t.id());
-        runtimes.put(t.id(), new Runtime(first, null));
         thread.start();
-    }
-
-    private FullTransferService fullServiceFor(TaskMetadata t, String table, TaskStateNotifier notifier) {
-        return new FullTransferService(
-                t.id(),
-                endpoint(t.sourceUrl(), t.sourceUser(), t.sourcePassword()),
-                t.schema(), table, t.chunkSize(), t.parallelism(), t.rowsPerSecond(),
-                checkpoints, () -> new MySqlSink(
-                        Connections.open(endpoint(t.targetUrl(), t.targetUser(), t.targetPassword())),
-                        t.id(), pkMap(t)),
-                notifier);
     }
 
     private void launchIncr(TaskMetadata t, String resumeGtid) {
+        Runtime rt = runtime(t);
         BinlogStoreService store = new BinlogStoreService(
                 endpoint(t.sourceUrl(), t.sourceUser(), t.sourcePassword()),
-                t.schema(), t.tables(), t.id(), this);
-        Thread thread = new Thread(() -> store.start(resumeGtid, () -> {
+                t.schema(), t.tables(), t.id(), this, rt.admin, props.reconnect());
+        rt.store = store;
+        Thread thread = new Thread(() -> {
             try {
-                return new MySqlSink(
+                store.start(resumeGtid, () -> new MySqlSink(
                         Connections.open(endpoint(t.targetUrl(), t.targetUser(), t.targetPassword())),
-                        t.id(), pkMap(t));
+                        rt.targetSchema, t.id(), rt.pkByTable));
             } catch (Exception e) {
-                throw new DtsException("打开目标连接失败: " + e.getMessage(), e);
+                onError(t.id(), "增量启动失败: " + e.getMessage());
             }
-        }), "incr-" + t.id());
-        runtimes.put(t.id(), new Runtime(null, store));
+        }, "incr-" + t.id());
         thread.start();
+    }
+
+    /** 懒建运行时资源（目标端管理连接 + 全量断点连接 + 主键表）。 */
+    private Runtime runtime(TaskMetadata t) {
+        return runtimes.computeIfAbsent(t.id(), id -> {
+            TargetAdminImpl admin = TargetAdminImpl.open(endpoint(t.targetUrl(), t.targetUser(), t.targetPassword()));
+            Connection checkpointConn = Connections.open(endpoint(t.targetUrl(), t.targetUser(), t.targetPassword()));
+            try {
+                TargetSchemaInit.ensure(checkpointConn);
+            } catch (Exception e) {
+                throw new DtsException("初始化目标库断点表失败: " + e.getMessage(), e);
+            }
+            return new Runtime(admin, checkpointConn, new TargetFullCheckpointStore(checkpointConn),
+                    pkMap(t), JdbcUrl.databaseOf(t.targetUrl()));
+        });
+    }
+
+    private FullTransferService fullServiceFor(TaskMetadata t, String table, TaskStateNotifier notifier) {
+        Runtime rt = runtime(t);
+        RateLimiter limiter = globalLimiter.forTask(t.rowsPerSecond());
+        return new FullTransferService(
+                t.id(),
+                endpoint(t.sourceUrl(), t.sourceUser(), t.sourcePassword()),
+                t.schema(), table, t.chunkSize(), t.parallelism(), limiter,
+                rt.checkpoints,
+                () -> new MySqlSink(
+                        Connections.open(endpoint(t.targetUrl(), t.targetUser(), t.targetPassword())),
+                        rt.targetSchema, t.id(), rt.pkByTable),
+                notifier);
     }
 
     private Map<String, List<String>> pkMap(TaskMetadata t) {
@@ -345,6 +534,25 @@ public class MigrationEngineImpl implements MigrationEngine, TaskStateNotifier {
         }
     }
 
+    private int countFullCheckpoints(TaskMetadata t) {
+        Runtime rt = runtimes.get(t.id());
+        if (rt == null) {
+            return 0;
+        }
+        return rt.checkpoints.completedUpperPks(t.id()).size();
+    }
+
+    private static void requireSameDatabase(String url, String schema, String label) {
+        String db = JdbcUrl.databaseOf(url);
+        if (db == null) {
+            throw new DtsException(label + " 必须带库名（形如 jdbc:mysql://host:3306/" + schema + "）");
+        }
+        if (!JdbcUrl.sameDatabase(db, schema)) {
+            throw new DtsException(label + " 的库名 " + db + " 与任务 schema " + schema
+                    + " 不一致 —— 源、目标、schema 三者必须同名（本版不支持改库名迁移）");
+        }
+    }
+
     private static DbEndpoint endpoint(String url, String user, String password) {
         return new DbEndpoint(url, user, password);
     }
@@ -359,7 +567,9 @@ public class MigrationEngineImpl implements MigrationEngine, TaskStateNotifier {
                 "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_TYPE='BASE TABLE'")) {
             ps.setString(1, schema);
             try (var rs = ps.executeQuery()) {
-                while (rs.next()) names.add(rs.getString(1));
+                while (rs.next()) {
+                    names.add(rs.getString(1));
+                }
             }
         }
         return names;

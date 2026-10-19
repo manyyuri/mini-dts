@@ -9,6 +9,8 @@ import com.minidts.common.JdbcPkBoundaryScanner;
 import com.minidts.common.OpType;
 import com.minidts.common.PkCodec;
 import com.minidts.common.PkResolver;
+import com.minidts.common.RateLimiter;
+import com.minidts.common.TokenBucket;
 import com.minidts.common.RowRecord;
 import com.minidts.common.TaskStateNotifier;
 import com.minidts.connector.Sink;
@@ -43,7 +45,7 @@ public class FullTransferService {
     private final String table;
     private final int chunkSize;
     private final int parallelism;
-    private final long rowsPerSecond;
+    private final RateLimiter limiter;
     private final FullCheckpointStore checkpointStore;
     private final SinkFactory sinkFactory;
     private final TaskStateNotifier notifier;
@@ -64,13 +66,22 @@ public class FullTransferService {
                                int chunkSize, int parallelism, long rowsPerSecond,
                                FullCheckpointStore checkpointStore, SinkFactory sinkFactory,
                                TaskStateNotifier notifier) {
+        this(taskId, source, schema, table, chunkSize, parallelism,
+                new TokenBucket(rowsPerSecond), checkpointStore, sinkFactory, notifier);
+    }
+
+    /** 外部注入限流器（实例级全局预算 + 任务级预算由 starter 组合）。 */
+    public FullTransferService(String taskId, DbEndpoint source, String schema, String table,
+                               int chunkSize, int parallelism, RateLimiter limiter,
+                               FullCheckpointStore checkpointStore, SinkFactory sinkFactory,
+                               TaskStateNotifier notifier) {
         this.taskId = taskId;
         this.source = source;
         this.schema = schema;
         this.table = table;
         this.chunkSize = Math.max(1, chunkSize);
         this.parallelism = Math.max(1, parallelism);
-        this.rowsPerSecond = Math.max(1, rowsPerSecond);
+        this.limiter = limiter;
         this.checkpointStore = checkpointStore;
         this.sinkFactory = sinkFactory;
         this.notifier = notifier;
@@ -97,7 +108,6 @@ public class FullTransferService {
 
             List<Object> uppers = JdbcPkBoundaryScanner.scanUpperBounds(metaConn, schema, table, pk, chunkSize);
             Set<String> completed = checkpointStore.completedUpperPks(taskId);
-            TokenBucket limiter = new TokenBucket(rowsPerSecond);
 
             List<Future<?>> futures = new ArrayList<>();
             for (int i = 0; i < uppers.size(); i++) {
@@ -110,7 +120,7 @@ public class FullTransferService {
                 }
                 Object lower = i == 0 ? null : uppers.get(i - 1);
                 Chunk chunk = new Chunk(i, lower, upper);
-                futures.add(executor.submit(() -> copyChunk(chunk, pk, pkType, limiter)));
+                futures.add(executor.submit(() -> copyChunk(chunk, pk, pkType)));
             }
             for (Future<?> f : futures) {
                 try {
@@ -133,7 +143,7 @@ public class FullTransferService {
         }
     }
 
-    private void copyChunk(Chunk chunk, String pk, String pkType, TokenBucket limiter) {
+    private void copyChunk(Chunk chunk, String pk, String pkType) {
         if (stopped) return;
         String qualified = JdbcPkBoundaryScanner.qualify(schema, table);
         try (Connection src = Connections.open(source); Sink sink = sinkFactory.open()) {

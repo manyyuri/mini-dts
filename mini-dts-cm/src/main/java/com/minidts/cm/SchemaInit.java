@@ -2,10 +2,23 @@ package com.minidts.cm;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 
-/** CM 元数据表结构（H2，启动时建）。 */
+/**
+ * CM 元数据表结构（启动时建，幂等）。
+ *
+ * 迁移目标：这些表可以整体放在共享 MySQL 上 —— 所有 DDL 都只用 H2 / MySQL 双兼容语法，
+ * 长文本列类型由 {@link SqlDialect} 决定。
+ *
+ * 注意 dts_full_checkpoint 不在这里：全量断点已迁到目标库（见 connector/TargetFullCheckpointStore），
+ * 与它保护的数据同处一地，任务换节点也能接着跑。
+ */
 public class SchemaInit {
 
     public static void init(JdbcTemplate jdbc) {
+        init(jdbc, SqlDialect.detect(safeDataSource(jdbc)));
+    }
+
+    public static void init(JdbcTemplate jdbc, SqlDialect dialect) {
+        String longText = dialect.longText();
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS dts_task (
                   id VARCHAR(64) PRIMARY KEY,
@@ -22,18 +35,11 @@ public class SchemaInit {
                   rows_per_second BIGINT,
                   state VARCHAR(32),
                   full_done BOOLEAN,
-                  consistency_gtid CLOB,
-                  error CLOB,
+                  consistency_gtid %s,
+                  error %s,
                   created_at TIMESTAMP,
                   updated_at TIMESTAMP
-                )""");
-        jdbc.execute("""
-                CREATE TABLE IF NOT EXISTS dts_full_checkpoint (
-                  task_id VARCHAR(64),
-                  upper_pk VARCHAR(256),
-                  done_at TIMESTAMP,
-                  CONSTRAINT pk_full_checkpoint PRIMARY KEY (task_id, upper_pk)
-                )""");
+                )""".formatted(longText, longText));
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS dts_verify_chunk (
                   task_id VARCHAR(64),
@@ -51,9 +57,24 @@ public class SchemaInit {
                   chunk_index INT,
                   pk VARCHAR(256),
                   diff_type VARCHAR(32),
-                  src_row CLOB,
-                  tgt_row CLOB,
+                  src_row %s,
+                  tgt_row %s,
                   found_at TIMESTAMP
+                )""".formatted(longText, longText));
+        // 任务租约：多节点部署时谁跑同一个任务，靠它排他（不靠进程内 synchronized）
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS dts_task_lease (
+                  task_id VARCHAR(64) PRIMARY KEY,
+                  owner VARCHAR(128) NOT NULL,
+                  renewed_at TIMESTAMP NOT NULL
                 )""");
+    }
+
+    private static javax.sql.DataSource safeDataSource(JdbcTemplate jdbc) {
+        try {
+            return jdbc.getDataSource();
+        } catch (Exception e) {
+            return null;
+        }
     }
 }

@@ -50,6 +50,14 @@ public class TaskRepository {
         return list.stream().findFirst();
     }
 
+    /** 启动恢复：扫出所有「DB 说是运行中」的任务。 */
+    public List<TaskMetadata> findByStates(TaskState... states) {
+        String placeholders = String.join(",", java.util.Collections.nCopies(states.length, "?"));
+        Object[] args = java.util.Arrays.stream(states).map(Enum::name).toArray();
+        return jdbc.query("SELECT * FROM dts_task WHERE state IN (" + placeholders + ") ORDER BY created_at",
+                MAPPER, args);
+    }
+
     public List<TaskMetadata> findAll() {
         return jdbc.query("SELECT * FROM dts_task ORDER BY created_at", MAPPER);
     }

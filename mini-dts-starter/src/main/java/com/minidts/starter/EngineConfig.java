@@ -1,17 +1,21 @@
 package com.minidts.starter;
 
-import com.minidts.cm.FullCheckpointRepository;
-import com.minidts.cm.MigrationEngine;
 import com.minidts.cm.SchemaInit;
+import com.minidts.cm.TaskLeaseManager;
 import com.minidts.cm.TaskRepository;
 import com.minidts.cm.VerifyReportRepository;
+import com.minidts.common.GlobalRateLimiter;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 import javax.sql.DataSource;
 
 @Configuration
+@EnableScheduling
+@EnableConfigurationProperties(EngineProperties.class)
 public class EngineConfig {
 
     @Bean
@@ -27,19 +31,29 @@ public class EngineConfig {
     }
 
     @Bean
-    public FullCheckpointRepository fullCheckpointRepository(JdbcTemplate jdbc) {
-        return new FullCheckpointRepository(jdbc);
-    }
-
-    @Bean
     public VerifyReportRepository verifyReportRepository(JdbcTemplate jdbc) {
         return new VerifyReportRepository(jdbc);
     }
 
     @Bean
-    public MigrationEngine migrationEngine(TaskRepository tasks,
-                                           FullCheckpointRepository checkpoints,
-                                           VerifyReportRepository verifyReports) {
-        return new MigrationEngineImpl(tasks, checkpoints, verifyReports);
+    public TaskLeaseManager taskLeaseManager(JdbcTemplate jdbc, EngineProperties props) {
+        return new TaskLeaseManager(jdbc, props.nodeId(), props.leaseTtl());
+    }
+
+    @Bean
+    public GlobalRateLimiter globalRateLimiter(EngineProperties props) {
+        return new GlobalRateLimiter(props.globalRowsPerSecond());
+    }
+
+    @Bean
+    public MigrationEngineImpl migrationEngine(TaskRepository tasks, VerifyReportRepository verifyReports,
+                                               TaskLeaseManager leases, GlobalRateLimiter limiter,
+                                               EngineProperties props) {
+        return new MigrationEngineImpl(tasks, verifyReports, leases, limiter, props);
+    }
+
+    @Bean
+    public TaskRecovery taskRecovery(MigrationEngineImpl engine, TaskRepository tasks, EngineProperties props) {
+        return new TaskRecovery(engine, tasks, props);
     }
 }
