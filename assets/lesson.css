@@ -1,0 +1,72 @@
+/* mini-dts 课程共享样式：所有 lesson / reference 都链这一份，保证看起来是同一门课。 */
+
+:root {
+  --ink: #1f2937;
+  --muted: #6b7280;
+  --faint: #e5e7eb;
+  --paper: #fcfcfb;
+  --blue: #2563eb;
+  --green: #059669;
+  --amber: #b45309;
+  --red: #be123c;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0 auto;
+  padding: 56px 28px 96px;
+  max-width: 860px;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "PingFang SC", "Hiragino Sans GB", -apple-system, system-ui, sans-serif;
+  font-size: 17px;
+  line-height: 1.75;
+  -webkit-font-smoothing: antialiased;
+}
+
+header { margin-bottom: 40px; border-bottom: 2px solid var(--faint); padding-bottom: 20px; }
+header h1 { font-size: 34px; line-height: 1.25; margin: 0 0 10px; letter-spacing: -0.01em; }
+header .sub { color: var(--muted); font-size: 16px; margin: 0; }
+
+h2 {
+  font-size: 21px;
+  margin: 44px 0 14px;
+  padding-top: 18px;
+  border-top: 1px solid var(--faint);
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+h2 .num {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--blue);
+  background: #eff6ff;
+  border-radius: 6px;
+  padding: 2px 8px;
+  letter-spacing: 0.04em;
+}
+
+table { width: 100%; border-collapse: collapse; margin: 10px 0 8px; font-size: 16px; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--faint); vertical-align: top; }
+th { width: 34%; font-weight: 600; color: var(--ink); }
+td { color: var(--muted); }
+tr:last-child th, tr:last-child td { border-bottom: none; }
+
+code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.88em;
+  background: #f3f4f6;
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+
+section { break-inside: avoid; }
+footer { margin-top: 56px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--faint); padding-top: 16px; }
+
+@media print {
+  body { padding: 0; max-width: none; font-size: 12pt; background: #fff; }
+  h2 { break-after: avoid; }
+  section { page-break-inside: avoid; }
+}

@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>mini-dts 速查手册</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<header>
+  <h1>mini-dts 速查手册</h1>
+  <p class="sub">每节一张卡：只留「记住这一句就够」的部分。生成自 <code>lessons/*.md</code>，
+     改了课就重跑 <code>assets/build_reference.py</code>。</p>
+</header>
+<main>
+  <section>
+    <h2><span class="num">0001</span>mini-dts 重讲：从「一条数据的旅程」看它到底在干嘛</h2>
+    <table>
+      <tr><th>三条通道</th><td>全量（搬存量）、增量（跟变化）、校验（对清单）</td></tr>
+      <tr><th>控制面</th><td>只管任务的一生：参数、状态、谁在跑</td></tr>
+      <tr><th>目标库自用表</th><td>增量进度、全量进度、死信、DDL 台账、结构指纹</td></tr>
+      <tr><th>不丢不重靠三件事</th><td>断点宁可靠后、幂等 UPSERT、数据与位点同事务</td></tr>
+      <tr><th>一句话</th><td>源库照常跑业务，我在旁边搬，并随时说清搬到哪了</td></tr>
+    </table>
+  </section>
+  <section>
+    <h2><span class="num">0002</span>L2 数据契约：三个通道共用一套「行」的写法</h2>
+    <table>
+      <tr><th>行结构</th><td>schema/table/columns/values/op/txId</td></tr>
+      <tr><th>编码出口</th><td>只有一个：RowCodec</td></tr>
+      <tr><th>归一化</th><td>时间精度、小数 scale、binary→hex、NULL 标记</td></tr>
+      <tr><th>顺序</th><td>columns 顺序 = 定义顺序，三处一致</td></tr>
+      <tr><th>失败策略</th><td>列数≠值数 → 直接报错</td></tr>
+    </table>
+  </section>
+  <section>
+    <h2><span class="num">0003</span>L3 主键即一切：切片、断点、幂等、校验共用一个上界</h2>
+    <table>
+      <tr><th>切法</th><td>按主键范围，每片记上界</td></tr>
+      <tr><th>区间</th><td>左开右闭 `(lo, hi]`</td></tr>
+      <tr><th>断点键</th><td>上界的编码值</td></tr>
+      <tr><th>已完成的判据</th><td>上界在断点集合里</td></tr>
+      <tr><th>拒绝条件</th><td>无主键 / 复合主键 / 主键类型不支持</td></tr>
+    </table>
+  </section>
+  <section>
+    <h2><span class="num">0004</span>L4 幂等写入与保序：同一行写几次都一样</h2>
+    <table>
+      <tr><th>幂等写法</th><td>`INSERT … ON DUPLICATE KEY UPDATE`</td></tr>
+      <tr><th>前提</th><td>目标端主键与源一致</td></tr>
+      <tr><th>合并规则</th><td>只合并相邻、同表、同操作</td></tr>
+      <tr><th>上限</th><td>单条语句 ≤ 500 行</td></tr>
+      <tr><th>失败兜底</th><td>逐行重试一次，仍失败落死信表</td></tr>
+    </table>
+  </section>
+  <section>
+    <h2><span class="num">0005</span>L5 全量通道：切片、并行、限速，以及那个「糟糕但安全」的窗口</h2>
+    <table>
+      <tr><th>顺序红线</th><td>先写数据，后记断点</td></tr>
+      <tr><th>并行边界</th><td>只在片之间</td></tr>
+      <tr><th>断点位置</th><td>目标库 `dts_full_checkpoint`</td></tr>
+      <tr><th>限速</th><td>实例级 + 任务级两层令牌桶</td></tr>
+      <tr><th>恢复语义</th><td>跳过已完成上界，重做未记的那一片</td></tr>
+    </table>
+  </section>
+  <section>
+    <h2><span class="num">0006</span>L6 增量通道：一串 binlog 事件，怎么变成一批「行」</h2>
+    <table>
+      <tr><th>批边界</th><td>GTID … XID 一个事务一批</td></tr>
+      <tr><th>顺序</th><td>批内保持源库到达顺序</td></tr>
+      <tr><th>主键变更</th><td>DELETE 旧行 + UPSERT 新行</td></tr>
+      <tr><th>大事务</th><td>缓冲上限，超了先落一批（位点不动）</td></tr>
+      <tr><th>表过滤</th><td>库名 + 表名双键</td></tr>
+    </table>
+  </section>
+  <section>
+    <h2><span class="num">0007</span>L7 校验通道：怎么证明「搬对了」，又怎么不被线上写入骗</h2>
+    <table>
+      <tr><th>切法</th><td>与全量完全一致</td></tr>
+      <tr><th>第一层</th><td>分片 CRC 比快</td></tr>
+      <tr><th>第二层</th><td>不一致的分片重读、逐行比</td></tr>
+      <tr><th>输出</th><td>差异表：分片号 + 主键 + 两侧行</td></tr>
+      <tr><th>定位</th><td>只发现问题，不改数据</td></tr>
+    </table>
+  </section>
+  <section>
+    <h2><span class="num">0008</span>L8 位点与 GTID：为什么要记一个「起点」，而不是录下 binlog</h2>
+    <table>
+      <tr><th>位点类型</th><td>GTID 集合（`uuid:1-n`）</td></tr>
+      <tr><th>一致性位点</th><td>全量开始**前**读取</td></tr>
+      <tr><th>增量起点</th><td>全量完成 → 从一致性位点回放</td></tr>
+      <tr><th>存放位置</th><td>目标库 `dts_incr_checkpoint`</td></tr>
+      <tr><th>环境要求</th><td>`gtid_mode=ON`（建任务时预检）</td></tr>
+    </table>
+  </section>
+  <section>
+    <h2><span class="num">0009</span>L9 数据 + 位点同事务：不丢数据的最后一道保险</h2>
+    <table>
+      <tr><th>原子单位</th><td>一个源事务 = 一个目标事务</td></tr>
+      <tr><th>事务内含</th><td>业务写入 + 位点更新</td></tr>
+      <tr><th>失败处理</th><td>整体回滚，位点不动</td></tr>
+      <tr><th>位点位置</th><td>目标库（同库才能同事务）</td></tr>
+      <tr><th>可证明性质</th><td>位点绝不超前，进程恢复后最多重做</td></tr>
+    </table>
+  </section>
+  <section>
+    <h2><span class="num">0010</span>L10 崩溃与接管：全系统一共三处「状态」，都在哪、谁读</h2>
+    <table>
+      <tr><th>断点（全量）</th><td>目标库，按分片上界</td></tr>
+      <tr><th>位点（增量）</th><td>目标库，与数据同事务</td></tr>
+      <tr><th>租约</th><td>元数据库，心跳续租</td></tr>
+      <tr><th>接管</th><td>抢租约 → 读断点 → 跳过已完成</td></tr>
+      <tr><th>假活</th><td>状态在跑但指标不动 = 故障</td></tr>
+    </table>
+  </section>
+  <section>
+    <h2><span class="num">0011</span>L11 DDL 与结构漂移：源端改了表，同步怎么办</h2>
+    <table>
+      <tr><th>DDL 在哪</th><td>binlog 的 QUERY 事件</td></tr>
+      <tr><th>白名单</th><td>纯追加列，自动执行</td></tr>
+      <tr><th>其它 DDL</th><td>记台账 + 任务暂停等人</td></tr>
+      <tr><th>台账</th><td>目标库 `dts_ddl_event`（含语句原文）</td></tr>
+      <tr><th>指纹</th><td>建任务登记，运行期复核</td></tr>
+    </table>
+  </section>
+  <section>
+    <h2><span class="num">0012</span>L12 改造演练：三个需求，各会牵动哪些模块</h2>
+    <table>
+      <tr><th>事实归属</th><td>这个信息现在存在哪？谁读？</td></tr>
+      <tr><th>契约变更</th><td>端口签名要不要变？`RowRecord` 要不要加字段？</td></tr>
+      <tr><th>语义重做</th><td>目标端写语义是否要重做（如 Kafka 无 UPSERT）</td></tr>
+      <tr><th>状态搬家</th><td>内存状态是否要落库（多进程前提）</td></tr>
+      <tr><th>测试成本</th><td>哪些现有测试会失效？要补哪一层？</td></tr>
+    </table>
+  </section>
+  <section>
+    <h2><span class="num">0013</span>E1 这类系统怎么测：三层，各抓一类毛病</h2>
+    <table>
+      <tr><th>H2 双库</th><td>逻辑正确性，秒级反馈</td></tr>
+      <tr><th>崩溃注入</th><td>「写了没记断点」窗口的证明</td></tr>
+      <tr><th>Docker E2E</th><td>真实 binlog / 重连 / 接管</td></tr>
+      <tr><th>门控</th><td>无 Docker 自动跳过，不阻塞本地开发</td></tr>
+    </table>
+  </section>
+  <section>
+    <h2><span class="num">0014</span>E2 线上视角：四个指标，一眼看出「真在跑」还是「假活着」</h2>
+    <table>
+      <tr><th>必看 4 指标</th><td>state / rowsCopied / incrCheckpointGtid / incrReconnects</td></tr>
+      <tr><th>健康判据</th><td>指标在动，不只是状态在跑</td></tr>
+      <tr><th>假活定义</th><td>状态 RUNNING + 指标冻结</td></tr>
+      <tr><th>设计红线</th><td>失败必须可见，宁可报红不要静默</td></tr>
+    </table>
+  </section>
+  <section>
+    <h2><span class="num">0015</span>E3 建任务时的六道闸门：把事故挡在开始之前</h2>
+    <table>
+      <tr><th>时机</th><td>全部在 `createTask`，只查元数据</td></tr>
+      <tr><th>原则</th><td>能早拒就早拒</td></tr>
+      <tr><th>静默风险</th><td>库名、结构漂移</td></tr>
+      <tr><th>指纹</th><td>建任务登记、运行期复核</td></tr>
+      <tr><th>成本</th><td>毫秒级，值得</td></tr>
+    </table>
+  </section>
+</main>
+<footer>
+  <p>配套课程：<code>CURRICULUM.md</code>（主线 12 节 + 加餐 3 节）</p>
+</footer>
+</body>
+</html>
