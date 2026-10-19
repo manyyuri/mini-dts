@@ -49,17 +49,26 @@ public final class RowCodec {
         return encode(r.columns(), r.values());
     }
 
-    public static String cell(Object v) {
+    /** 编码单个值；内部再做一次 normalize，保证外部直接调用也不会漏归一。 */
+    public static String cell(Object raw) {
+        if (raw == null) return NULL_SENTINEL;
+        Object v = Values.normalize(raw);
         if (v == null) return NULL_SENTINEL;
         if (v instanceof Long l) return "N:" + l;
         if (v instanceof Boolean b) return "N:" + (b ? 1 : 0);
-        if (v instanceof BigDecimal bd) return "N:" + bd.toPlainString();
+        if (v instanceof BigDecimal bd) return "N:" + canonicalDecimal(bd);
         if (v instanceof String s) return "S:" + s;
         if (v instanceof byte[] bytes) return "B:" + HexFormat.of().formatHex(bytes);
         if (v instanceof LocalDateTime dt) return "D:" + padNanos(dt);
         if (v instanceof LocalDate d) return "D:" + d.toString();
         if (v instanceof LocalTime t) return "D:" + padNanosTime(t);
         throw new IllegalStateException("unencodable value type: " + v.getClass().getName());
+    }
+
+    /** 去尾零后再 toPlainString：{@code 1.00} → {@code 1}，{@code 100} → {@code 100}（不会变科学计数法）。 */
+    private static String canonicalDecimal(BigDecimal bd) {
+        BigDecimal stripped = bd.stripTrailingZeros();
+        return stripped.scale() < 0 ? stripped.setScale(0).toPlainString() : stripped.toPlainString();
     }
 
     private static String padNanos(LocalDateTime dt) {

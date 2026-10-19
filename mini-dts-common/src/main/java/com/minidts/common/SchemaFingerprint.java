@@ -15,8 +15,11 @@ import java.util.List;
  * 表结构指纹：列名 + 类型 + 可空性 + 顺序 的稳定哈希。
  *
  * 用途：建任务时把源端指纹登记到目标库，增量启动/重连前复核 ——
- * 源端被 DBA 手工改了结构的场景（binlog 里看不到、或 DDL 已过保留期）能在开始写之前暴露，
- * 而不是等到某一批写入撞上列数不匹配才炸。
+ * 源端被 DBA 手工改了结构的场景（binlog 里看不到、或 DDL 已过保留期）能在开始写之前暴露。
+ *
+ * 关键设计：指纹按**类型等价类**算（{@link TypeFamily}），不比原始类型名。
+ * 否则 `BIGINT` 与 `int8`、`VARCHAR` 与 `character varying` 会被判成「结构不一致」，
+ * 跨方言场景天天误报。
  */
 public final class SchemaFingerprint {
 
@@ -34,8 +37,16 @@ public final class SchemaFingerprint {
         }
     }
 
-    /** 读某张表的指纹（MySQL 与 H2(MySQL 模式) 通用）。 */
+    /** 读某张表的指纹：按「列名 + 类型等价类 + 可空性」计算，跨方言可比。 */
     public static String read(Connection conn, String schema, String table) {
+        List<String> specs = specs(conn, schema, table);
+        if (specs.isEmpty()) {
+            throw new DtsException("表不存在或没有列: " + schema + "." + table);
+        }
+        return of(specs);
+    }
+
+    private static List<String> specs(Connection conn, String schema, String table) {
         String sql = "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS"
                 + " WHERE TABLE_NAME = ?" + (schema == null ? "" : " AND TABLE_SCHEMA = ?")
                 + " ORDER BY ORDINAL_POSITION";
@@ -47,16 +58,14 @@ public final class SchemaFingerprint {
             }
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    specs.add(rs.getString(1) + ":" + rs.getString(2) + ":" + rs.getString(3));
+                    TypeFamily family = ColumnType.parse(rs.getString(2)).family();
+                    specs.add(rs.getString(1) + ":" + family + ":" + rs.getString(3));
                 }
             }
         } catch (SQLException e) {
             throw new DtsException("读取表结构指纹失败 " + schema + "." + table + ": " + e.getMessage(), e);
         }
-        if (specs.isEmpty()) {
-            throw new DtsException("表不存在或没有列: " + schema + "." + table);
-        }
-        return of(specs);
+        return specs;
     }
 
     /** 列清单（用于差异提示，不止给一个哈希值）。 */
@@ -72,7 +81,8 @@ public final class SchemaFingerprint {
             }
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    specs.add(rs.getString(1) + ":" + rs.getString(2) + ":" + rs.getString(3));
+                    ColumnType type = ColumnType.parse(rs.getString(2));
+                    specs.add(rs.getString(1) + ":" + type.raw() + "(" + type.family() + ")" + ":" + rs.getString(3));
                 }
             }
         } catch (SQLException e) {

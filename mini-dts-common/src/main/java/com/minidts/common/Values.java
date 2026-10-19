@@ -23,6 +23,15 @@ public final class Values {
         if (v instanceof Float) return BigDecimal.valueOf((Float) v);
         if (v instanceof Double) return BigDecimal.valueOf((Double) v);
         if (v instanceof Timestamp ts) return ts.toLocalDateTime();
+        // 带时区的时间类型（PG timestamptz 等）：按 JVM 默认时区折算成本地时间。
+        // 迁移不做时区换算；两边时区语义不同属于「类型兼容问题」，由建任务时的评估报告出来。
+        if (v instanceof java.time.OffsetDateTime odt) {
+            return odt.atZoneSameInstant(java.time.ZoneId.systemDefault()).toLocalDateTime();
+        }
+        if (v instanceof java.time.ZonedDateTime zdt) return zdt.toLocalDateTime();
+        if (v instanceof java.time.Instant instant) {
+            return LocalDateTime.ofInstant(instant, java.time.ZoneId.systemDefault());
+        }
         if (v instanceof java.sql.Date d) return d.toLocalDate();
         if (v instanceof Time t) return t.toLocalTime();
         if (v instanceof Date d) return LocalDateTime.ofInstant(d.toInstant(),

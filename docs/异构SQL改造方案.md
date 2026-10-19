@@ -129,6 +129,33 @@ public interface SqlDialect {
 
 ---
 
+## 0.7 阶段状态（截至 `6f82595`）
+
+| 期 | 内容 | 状态 | 证据 / 缺口 |
+|---|---|---|---|
+| **期 1 抽方言** | SqlDialect 端口 + MySQL 方言，Sink 只管事务/批次/位点 | ✅ **完成** | `MySqlSink` SQL 字面量归零；77 用例 72 通过 0 失败 |
+| **期 2 加 PG 方言** | PostgreSQL 方言 + 类型映射 + 兼容评估 | 🟡 **约 70%** | 已能生成 PG 语句；类型等价类 + `PostgresTypeMapper` + `TypeCompatibility` 已在 `createTask` 生效（见 `learning-records/0004`）；**仅缺**：真实 PG 落库验证（无环境） |
+| **期 3 校验跨方言** | canonical 编码 + 类型等价类指纹 | 🟢 **核心已完成** | `RowCodec` 去尾零 / 布尔≡tinyint / 时区归一；指纹改按等价类；`RowCodecCanonicalTest` 8 例；**剩余**：按列类型选择 JSON 规范化策略 |
+| **期 4 DDL 翻译** | 反向生成 CREATE TABLE + ADD COLUMN 跨方言 | ❌ **未开始** | `TargetAdminImpl.applyDdl` 仍是"源语句原样 + 补库名"，跨方言会语法失败 |
+| 期 5 源异构 | 新 Store（LogMiner / 逻辑复制） | ❌ 未立项 | — |
+
+### 期 2 卡在哪（实测，不是猜）
+
+想让 PG 方言真的落库验证，需要真实 PostgreSQL。本机两条路都不通：
+
+1. **Docker**：`docker.io` 不可达（`proxyconnect refused`），拉不到 `postgres` 镜像；
+2. **H2 的 PostgreSQL 模式**：实测**不支持** `ON CONFLICT (id) DO UPDATE SET x = EXCLUDED.x`
+   （`Syntax error … ON CONFLICT`，H2 2.2 只实现了很有限的 PG 兼容集）。
+
+所以期 2 剩下的工作分两半：
+- **不需要环境的部分**（可立刻做）：类型映射表 + 建任务时的跨方言类型兼容校验；
+- **需要环境的部分**：真实 PG 落库测试（一台本地 PG 或可达的镜像仓库即可）。
+
+> 结论：**期 1 完整、期 2 一半、期 3/4 未开始。**
+> 按 §0.6 的最小集定义，这已经是"能理解 OMS 方言边界"的够用状态；期 2~4 属于工程投入。
+
+---
+
 ## 1. 先界定：你要的「异构」是哪一档
 
 | 档 | 形态 | 需要动的东西 | 量级 |

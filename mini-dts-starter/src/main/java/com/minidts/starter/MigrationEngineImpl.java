@@ -7,6 +7,8 @@ import com.minidts.cm.TaskRepository;
 import com.minidts.cm.TaskState;
 import com.minidts.cm.TaskStateMachine;
 import com.minidts.cm.VerifyReportRepository;
+import com.minidts.common.ColumnType;
+import com.minidts.common.ColumnTypes;
 import com.minidts.common.Connections;
 import com.minidts.common.DbEndpoint;
 import com.minidts.common.DtsException;
@@ -19,7 +21,11 @@ import com.minidts.common.RateLimiter;
 import com.minidts.common.SchemaFingerprint;
 import com.minidts.common.TaskStateNotifier;
 import com.minidts.connector.MySqlSink;
+import com.minidts.connector.SqlDialectFactory;
 import com.minidts.connector.TargetAdminImpl;
+import com.minidts.connector.TypeCompatibility;
+import com.minidts.connector.TypeMapper;
+import com.minidts.connector.TypeMappers;
 import com.minidts.connector.TargetFullCheckpointStore;
 import com.minidts.connector.TargetSchemaInit;
 import com.minidts.full.FullTransferService;
@@ -139,6 +145,7 @@ public class MigrationEngineImpl implements MigrationEngine, TaskStateNotifier {
         List<String> tables = req.tables() == null
                 ? List.of() : req.tables().stream().filter(s -> !s.isBlank()).toList();
         Map<String, String> fingerprints = new LinkedHashMap<>();
+        Map<String, List<ColumnType>> sourceTypes = new LinkedHashMap<>();
         try (Connection src = Connections.open(source); Connection tgt = Connections.open(target)) {
             if (tables.isEmpty()) {
                 tables = listAllTables(src, req.schema());
@@ -167,6 +174,14 @@ public class MigrationEngineImpl implements MigrationEngine, TaskStateNotifier {
                             + "\n 目标=" + SchemaFingerprint.columns(tgt, req.schema(), t));
                 }
                 fingerprints.put(t, srcFp);
+                sourceTypes.put(t, ColumnTypes.read(src, req.schema(), t));
+            }
+            // 迁移评估（OMS 同名能力的 mini 版）：只读元数据，把「跑到一半才发现类型不兼容」提前到第 0 秒
+            TypeMapper mapper = TypeMappers.forDialect(SqlDialectFactory.detect(tgt));
+            List<String> typeProblems = TypeCompatibility.problems(sourceTypes, mapper);
+            if (!typeProblems.isEmpty()) {
+                throw new DtsException("源库类型无法自动迁移到目标库（" + mapper.name() + "）：\n - "
+                        + String.join("\n - ", typeProblems));
             }
         } catch (DtsException e) {
             throw e;
