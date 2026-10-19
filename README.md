@@ -43,6 +43,20 @@ MySQL → MySQL 迁移同步引擎（对标阿里 OMS 架构的 mini 实现）�
 > `./mvn17` 是仓库自带的包装脚本：自动找 JDK 17（`~/jdk17`、Homebrew `openjdk@17` 等），
 > 找到才执行 `mvn`，找不到就报错告诉你怎么装。也可以自己 `export JAVA_HOME=~/jdk17` 后用 `mvn`。
 
+### 常见启动失败
+
+`spring-boot:run` 报 `Process terminated with exit code: 1` 时，**真实原因被 Maven 包住了，要看应用自己的日志**：
+
+```bash
+mvn -pl mini-dts-starter spring-boot:run 2>&1 | grep -A6 "APPLICATION FAILED TO START"
+```
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| `Port 8080 was already in use` | 之前起过服务没退 | `lsof -ti:8080 \| xargs kill -9`，或换端口：`-Dspring-boot.run.arguments=--server.port=8081` |
+| `Failed to start bean 'webServerStartStop'` | 同上（端口起不来） | 同上 |
+| `Unable to open JDBC connection` / H2 锁 | 另一个进程占着 `./data/minidts-meta` | 停掉旧进程；H2 已开 `AUTO_SERVER=TRUE`，一般可共享 |
+
 ```bash
 # 建任务（源库需 binlog_format=ROW, binlog_row_image=FULL, gtid_mode=ON）
 # 注意：sourceUrl / targetUrl 的库名必须与 schema 一致（否则建任务即失败）
