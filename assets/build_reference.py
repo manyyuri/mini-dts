@@ -14,7 +14,7 @@ import re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LESSONS = sorted(glob.glob(os.path.join(ROOT, "lessons", "*.md")))
-OUT = os.path.join(ROOT, "reference", "mini-dts-cheatsheet.html")
+OUT = os.path.join(ROOT, "reference", "mini-oms-cheatsheet.html")
 
 
 def parse(path):
@@ -53,12 +53,12 @@ def main():
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>mini-dts 速查手册</title>
+<title>mini-oms 速查手册</title>
 <link rel="stylesheet" href="../assets/lesson.css">
 </head>
 <body>
 <header>
-  <h1>mini-dts 速查手册</h1>
+  <h1>mini-oms 速查手册</h1>
   <p class="sub">每节一张卡：只留「记住这一句就够」的部分。生成自 <code>lessons/*.md</code>，
      改了课就重跑 <code>assets/build_reference.py</code>。</p>
 </header>

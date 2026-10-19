@@ -20,8 +20,8 @@ title 一条 UPDATE 的旅程：从源库到目标库（增量通道）
 
 participant "业务程序" as APP
 participant "源库\n(binlog)" as SRC
-participant "增量订阅\nmini-dts-store" as STORE
-participant "写入端\nmini-dts-connector" as SINK
+participant "增量订阅\nmini-oms-store" as STORE
+participant "写入端\nmini-oms-connector" as SINK
 participant "目标库" as TGT
 
 APP -> SRC : UPDATE orders SET name='x' WHERE id=3
@@ -44,7 +44,7 @@ deactivate STORE
 activate SINK
 SINK -> TGT : BEGIN
 SINK -> TGT : 写业务表\nINSERT … ON DUPLICATE KEY UPDATE
-SINK -> TGT : 同一事务里写进度\nUPDATE dts_incr_checkpoint
+SINK -> TGT : 同一事务里写进度\nUPDATE oms_incr_checkpoint
 SINK -> TGT : COMMIT
 deactivate SINK
 

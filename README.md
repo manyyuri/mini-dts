@@ -1,25 +1,25 @@
-# mini-dts
+# mini-oms
 
-MySQL → MySQL 迁移同步引擎（对标阿里 OMS 架构的 mini 实现）：全量分片迁移 + binlog 增量同步 + 断点续传 + 幂等回放 + CRC 校验 + DDL 感知 + 多节点租约接管。
+MySQL → MySQL 迁移同步引擎（对标 OMS / OceanBase Migration Service 架构的 mini 实现）：全量分片迁移 + binlog 增量同步 + 断点续传 + 幂等回放 + CRC 校验 + DDL 感知 + 多节点租约接管。
 
 ## 模块
 
 | 模块 | 职责 |
 |---|---|
-| `mini-dts-common` | RowRecord 数据契约、RowCodec 编码、主键解析/边界扫描、JdbcUrl 库名校验、SchemaFingerprint 结构指纹、RateLimiter 限流、TargetAdmin/TaskStateNotifier 端口 |
-| `mini-dts-connector` | MySqlSink 幂等批量写入（库名限定 + 连续段分组建批 + 语句切片）、目标库自用表（位点/死信/全量断点/DDL 台账/结构指纹）、TargetFullCheckpointStore |
-| `mini-dts-full` | 全量迁移：主键分片 + chunk 断点续传 + 并行 worker + 两层限流 |
-| `mini-dts-store` | binlog 增量：自解析 binlog、GTID 断点、事务聚合与内存上限、断线重连、DdlClassifier 分类处置 |
-| `mini-dts-verifier` | CRC chunk 对账，漂移二次重读防误报 |
-| `mini-dts-cm` | 控制面：任务元数据（H2 / 共享 MySQL 双方言）、状态机、任务租约、REST API |
-| `mini-dts-starter` | Spring Boot 装配 + 编排（MigrationEngineImpl）+ 启动恢复 + 租约心跳 + Docker 门控 E2E |
+| `mini-oms-common` | RowRecord 数据契约、RowCodec 编码、主键解析/边界扫描、JdbcUrl 库名校验、SchemaFingerprint 结构指纹、RateLimiter 限流、TargetAdmin/TaskStateNotifier 端口 |
+| `mini-oms-connector` | MySqlSink 幂等批量写入（库名限定 + 连续段分组建批 + 语句切片）、目标库自用表（位点/死信/全量断点/DDL 台账/结构指纹）、TargetFullCheckpointStore |
+| `mini-oms-full` | 全量迁移：主键分片 + chunk 断点续传 + 并行 worker + 两层限流 |
+| `mini-oms-store` | binlog 增量：自解析 binlog、GTID 断点、事务聚合与内存上限、断线重连、DdlClassifier 分类处置 |
+| `mini-oms-verifier` | CRC chunk 对账，漂移二次重读防误报 |
+| `mini-oms-cm` | 控制面：任务元数据（H2 / 共享 MySQL 双方言）、状态机、任务租约、REST API |
+| `mini-oms-starter` | Spring Boot 装配 + 编排（MigrationEngineImpl）+ 启动恢复 + 租约心跳 + Docker 门控 E2E |
 
 ## 红线 → 代码
 
 | 红线 | 实现 |
 |---|---|
 | R1 双端共用 RowCodec | `common/RowCodec.java`（全量/增量/校验唯一编码出口） |
-| R2 位点在目标库 | `connector/TargetSchemaInit`（dts_incr_checkpoint 与业务数据同库，才能同事务） |
+| R2 位点在目标库 | `connector/TargetSchemaInit`（oms_incr_checkpoint 与业务数据同库，才能同事务） |
 | R3 一致性位点而非缓存 binlog | `common/MasterStatusReader`（全量前记 gtid_executed） |
 | R4 数据+位点同事务 | `MySqlSink.doWrite`（一个事务里先写数据再推位点） |
 | R5 保序 + PK 更新拆删增 | `MySqlSink.splitRuns` + `BinlogRecordMapper.update` |
@@ -36,8 +36,8 @@ MySQL → MySQL 迁移同步引擎（对标阿里 OMS 架构的 mini 实现）�
 # 系统默认 java 是 8 时，直接跑 mvn 会报
 #   "class file version 61.0 ... only recognizes up to 52.0"
 ./mvn17 test                                # 用 JDK 17 跑全部单测（H2，无需 Docker）
-./mvn17 test -pl mini-dts-starter           # 无 Docker 时 E2E 自动跳过
-./mvn17 -pl mini-dts-starter spring-boot:run  # 起服务 :8080
+./mvn17 test -pl mini-oms-starter           # 无 Docker 时 E2E 自动跳过
+./mvn17 -pl mini-oms-starter spring-boot:run  # 起服务 :8080
 ```
 
 > `./mvn17` 是仓库自带的包装脚本：自动找 JDK 17（`~/jdk17`、Homebrew `openjdk@17` 等），
@@ -48,14 +48,14 @@ MySQL → MySQL 迁移同步引擎（对标阿里 OMS 架构的 mini 实现）�
 `spring-boot:run` 报 `Process terminated with exit code: 1` 时，**真实原因被 Maven 包住了，要看应用自己的日志**：
 
 ```bash
-mvn -pl mini-dts-starter spring-boot:run 2>&1 | grep -A6 "APPLICATION FAILED TO START"
+mvn -pl mini-oms-starter spring-boot:run 2>&1 | grep -A6 "APPLICATION FAILED TO START"
 ```
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | `Port 8080 was already in use` | 之前起过服务没退 | `lsof -ti:8080 \| xargs kill -9`，或换端口：`-Dspring-boot.run.arguments=--server.port=8081` |
 | `Failed to start bean 'webServerStartStop'` | 同上（端口起不来） | 同上 |
-| `Unable to open JDBC connection` / H2 锁 | 另一个进程占着 `./data/minidts-meta` | 停掉旧进程；H2 已开 `AUTO_SERVER=TRUE`，一般可共享 |
+| `Unable to open JDBC connection` / H2 锁 | 另一个进程占着 `./data/minioms-meta` | 停掉旧进程；H2 已开 `AUTO_SERVER=TRUE`，一般可共享 |
 
 ```bash
 # 建任务。前提（都在 createTask 里检查，不满足直接拒绝）：
@@ -81,8 +81,8 @@ curl localhost:8080/api/tasks/{id}/metrics          # 含 state / 租约持有�
 
 ## 断点续传语义
 
-- **全量**：数据先写目标库成功 → 再记 chunk 断点（断点在目标库 `dts_full_checkpoint`）；崩溃恢复后重做"已写未记"的分片，靠幂等 upsert 收敛。
-- **增量**：从目标库 `dts_incr_checkpoint` 位点重播（至少一次），Sink 幂等 → exactly-once 效果。
+- **全量**：数据先写目标库成功 → 再记 chunk 断点（断点在目标库 `oms_full_checkpoint`）；崩溃恢复后重做"已写未记"的分片，靠幂等 upsert 收敛。
+- **增量**：从目标库 `oms_incr_checkpoint` 位点重播（至少一次），Sink 幂等 → exactly-once 效果。
 - **暂停→恢复**：增量恢复点 = 目标库位点；全量恢复 = 跳过已断点 chunk。
 - **换节点/重启**：启动扫描把 DB 里 RUNNING_* 的任务重挂回来（`MigrationEngineImpl.reattach`），抢到租约才接管。
 
@@ -94,7 +94,7 @@ binlog 里的 DDL 走 QUERY 事件，分类后三路处置（`store/DdlClassifie
 |---|---|---|
 | IGNORE | `BEGIN` / `COMMIT` / `SET ...` | 忽略 |
 | ADD_COLUMN（白名单） | `ALTER TABLE t ADD [COLUMN] c ...` | 自动在目标端执行 + 刷新元数据 + 更新指纹，任务继续 |
-| OTHER_DDL | `MODIFY` / `DROP` / `RENAME` / `CREATE` / `TRUNCATE` / `ADD INDEX` | 记 `dts_ddl_event` + 任务转 PAUSED 等人工 |
+| OTHER_DDL | `MODIFY` / `DROP` / `RENAME` / `CREATE` / `TRUNCATE` / `ADD INDEX` | 记 `oms_ddl_event` + 任务转 PAUSED 等人工 |
 | OTHER_STATEMENT | `GRANT` / `ANALYZE` / 存储过程 | 同上 |
 
 另外建任务时会比对源/目标的表结构指纹，运行期每次（重）连都复核一次 —— 手工改结构这种 binlog 外的漂移也会被拦在写入之前。
@@ -102,8 +102,8 @@ binlog 里的 DDL 走 QUERY 事件，分类后三路处置（`store/DdlClassifie
 ## 多节点部署
 
 ```yaml
-spring.datasource.url: jdbc:mysql://meta-host:3306/minidts_meta   # 元数据库换成共享库
-minidts:
+spring.datasource.url: jdbc:mysql://meta-host:3306/minioms_meta   # 元数据库换成共享库
+minioms:
   node-id: node-1
   max-concurrent-tasks: 8
   global-rows-per-second: 200000     # 实例级总预算（任务级限速之外的兜底）
@@ -112,7 +112,7 @@ minidts:
   recover-on-startup: true
 ```
 
-同一任务同一时刻只有一个节点在跑（`dts_task_lease`）；续租失败 = 被接管，本地运行时立即停手。断点全在目标库，接管方从断点续跑。
+同一任务同一时刻只有一个节点在跑（`oms_task_lease`）；续租失败 = 被接管，本地运行时立即停手。断点全在目标库，接管方从断点续跑。
 
 ## 已知局限
 

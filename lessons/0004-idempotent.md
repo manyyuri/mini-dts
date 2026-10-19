@@ -57,4 +57,4 @@
 
 ## 想看代码
 
-`mini-dts-connector/.../MySqlSink.java`（`splitRuns` / `doWrite` / 死信）
+`mini-oms-connector/.../MySqlSink.java`（`splitRuns` / `doWrite` / 死信）

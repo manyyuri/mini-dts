@@ -60,4 +60,4 @@
 
 ## 想看代码
 
-`mini-dts-starter/.../MigrationEngineImpl.java`（`metrics`）、`mini-dts-store/.../BinlogStoreService.java`（错误分类与重连计数）
+`mini-oms-starter/.../MigrationEngineImpl.java`（`metrics`）、`mini-oms-store/.../BinlogStoreService.java`（错误分类与重连计数）

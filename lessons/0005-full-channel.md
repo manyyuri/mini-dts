@@ -61,10 +61,10 @@
 |---|---|
 | 顺序红线 | 先写数据，后记断点 |
 | 并行边界 | 只在片之间 |
-| 断点位置 | 目标库 `dts_full_checkpoint` |
+| 断点位置 | 目标库 `oms_full_checkpoint` |
 | 限速 | 实例级 + 任务级两层令牌桶 |
 | 恢复语义 | 跳过已完成上界，重做未记的那一片 |
 
 ## 想看代码
 
-`mini-dts-full/.../FullTransferService.java`、`mini-dts-common/.../TokenBucket.java`、`GlobalRateLimiter.java`
+`mini-oms-full/.../FullTransferService.java`、`mini-oms-common/.../TokenBucket.java`、`GlobalRateLimiter.java`

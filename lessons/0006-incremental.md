@@ -70,4 +70,4 @@
 
 ## 想看代码
 
-`mini-dts-store/.../BinlogStoreService.java`、`BinlogRecordMapper.java`
+`mini-oms-store/.../BinlogStoreService.java`、`BinlogRecordMapper.java`

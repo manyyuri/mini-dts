@@ -59,4 +59,4 @@
 
 ## 想看代码
 
-`mini-dts-common/.../JdbcPkBoundaryScanner.java`（扫上界）、`PkResolver.java`（主键解析）、`Chunk.java`（区间模型）
+`mini-oms-common/.../JdbcPkBoundaryScanner.java`（扫上界）、`PkResolver.java`（主键解析）、`Chunk.java`（区间模型）

@@ -59,6 +59,6 @@
 
 ## 想看代码
 
-`mini-dts-common/.../RowRecord.java`（结构）、`RowCodec.java`（编码）、`Values.java`（归一化）
+`mini-oms-common/.../RowRecord.java`（结构）、`RowCodec.java`（编码）、`Values.java`（归一化）
 
 > 有任何一处想细看（比如「scale 到底怎么统一的」），问我，我给你逐行讲这三处。

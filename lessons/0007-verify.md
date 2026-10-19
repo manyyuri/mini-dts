@@ -65,4 +65,4 @@
 
 ## 想看代码
 
-`mini-dts-verifier/.../VerifyService.java`
+`mini-oms-verifier/.../VerifyService.java`

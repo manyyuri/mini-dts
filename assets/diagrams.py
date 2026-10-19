@@ -1,5 +1,5 @@
 """
-mini-dts 教学配图生成器（可复用组件）
+mini-oms 教学配图生成器（可复用组件）
 
 设计约束：
 - 无外部依赖（只用 Pillow），字体走 macOS 自带 PingFang SC
@@ -143,7 +143,7 @@ class Canvas:
 # ── 图 1：全景架构 ────────────────────────────────────────────
 def panorama():
     c = Canvas(1720, 1060)
-    c.title("mini-dts 全景：两个数据库 + 三条数据通道 + 一条控制线",
+    c.title("mini-oms 全景：两个数据库 + 三条数据通道 + 一条控制线",
             "左源右目标，中间负责「搬过去 / 跟着变 / 对一遍」，下方控制面管任务的一生")
 
     # 左：源库
@@ -162,11 +162,11 @@ def panorama():
 
     # 中：三条通道
     lanes = [
-        (200, "全量迁移", "mini-dts-full", GREEN, GREEN_SOFT,
+        (200, "全量迁移", "mini-oms-full", GREEN, GREEN_SOFT,
          ["按主键把大表切成一份份", "并行搬运 + 限速", "搬到哪就记在哪（断点）"]),
-        (380, "增量订阅", "mini-dts-store", BLUE, BLUE_SOFT,
+        (380, "增量订阅", "mini-oms-store", BLUE, BLUE_SOFT,
          ["跟着 binlog 往下走", "一个事务一批，保持顺序", "断线自动重连"]),
-        (560, "数据校验", "mini-dts-verifier", AMBER, AMBER_SOFT,
+        (560, "数据校验", "mini-oms-verifier", AMBER, AMBER_SOFT,
          ["用同样的切法算 CRC", "不一致就逐行比对", "只报告，不改数据"]),
     ]
     for y, name, module, accent, soft, lines in lanes:
@@ -188,11 +188,11 @@ def panorama():
     c.text(1006, 346, "写入是 UPSERT，可重复执行", 15, REGULAR, MUTED)
     c.d.rounded_rectangle([986, 402, 1286, 598], radius=12, fill=(241, 245, 249))
     c.text(1006, 416, "自用表（记账本）", 19, MEDIUM, INK)
-    for i, line in enumerate(["dts_incr_checkpoint  增量进度",
-                              "dts_full_checkpoint  全量进度",
-                              "dts_dead_letter      失败存根",
-                              "dts_ddl_event        结构变更",
-                              "dts_schema_fingerprint 结构指纹"]):
+    for i, line in enumerate(["oms_incr_checkpoint  增量进度",
+                              "oms_full_checkpoint  全量进度",
+                              "oms_dead_letter      失败存根",
+                              "oms_ddl_event        结构变更",
+                              "oms_schema_fingerprint 结构指纹"]):
         c.text(1006, 456 + i * 28, line, 16, REGULAR, MUTED)
 
     # 源 → 三条通道
@@ -206,9 +206,9 @@ def panorama():
 
     # 控制面
     c.d.rounded_rectangle([400, 740, 1320, 936], radius=18, fill=CARD, outline=FAINT, width=2)
-    c.text(424, 760, "控制面 mini-dts-cm　＋　编排 mini-dts-starter", 24, SEMIBOLD, INK)
+    c.text(424, 760, "控制面 mini-oms-cm　＋　编排 mini-oms-starter", 24, SEMIBOLD, INK)
     cells = [
-        ("任务账本", "dts_task：参数、状态、进度"),
+        ("任务账本", "oms_task：参数、状态、进度"),
         ("状态机", "全量 → 增量 → 完成"),
         ("任务租约", "同一任务只许一个节点跑"),
         ("启动恢复", "重启后接回「在跑」的任务"),
@@ -225,7 +225,7 @@ def panorama():
     c.arrow(700, 726, 700, 738, FAINT)
     c.text(716, 722, "下发任务 / 收进度", 15, MEDIUM, MUTED)
 
-    c.text(56, 972, "一句话：源库照常跑业务，mini-dts 在旁边把数据搬过去，并且一直跟着变，还能随时说清「搬到哪了」。",
+    c.text(56, 972, "一句话：源库照常跑业务，mini-oms 在旁边把数据搬过去，并且一直跟着变，还能随时说清「搬到哪了」。",
            22, MEDIUM, INK)
     return c.save("fig1-panorama.png")
 
@@ -669,7 +669,7 @@ def l7_verify():
                               "主键变更被处理成了普通更新（留孤儿行）",
                               "有人手工改了目标库"]):
         c.text(832, 460 + i * 26, "· " + line, 16, REGULAR, MUTED)
-    c.text(832, 550, "处置：记录到 dts_verify_diff，给出主键与两侧行内容", 16, MEDIUM, GREEN)
+    c.text(832, 550, "处置：记录到 oms_verify_diff，给出主键与两侧行内容", 16, MEDIUM, GREEN)
 
     c.note(56, 634, 1488,
            "校验的定位是「发现者」而不是「修复者」：它只报告哪些分片、哪些主键不一致，不做任何写入。"
@@ -755,11 +755,11 @@ def l10_checkpoints():
                "重启后能接着跑，靠的是把状态放在「别人也能看见」的地方，并且只让一个节点干活",
                takeaway="一句话：断点跟着数据走（目标库），任务归属跟着租约走（共享元数据库）—— 所以换台机器也能接上。")
 
-    cards = [("① 全量断点", "目标库 dts_full_checkpoint",
+    cards = [("① 全量断点", "目标库 oms_full_checkpoint",
               ["记录「哪个分片上界已搬完」", "谁接管都能读到"], GREEN, GREEN_SOFT),
-             ("② 增量位点", "目标库 dts_incr_checkpoint",
+             ("② 增量位点", "目标库 oms_incr_checkpoint",
               ["记录「回放到哪个事务」", "和业务数据同事务提交"], BLUE, BLUE_SOFT),
-             ("③ 任务租约", "元数据库 dts_task_lease",
+             ("③ 任务租约", "元数据库 oms_task_lease",
               ["记录「这个任务归谁跑」", "心跳续租，抢不到就不许跑"], AMBER, AMBER_SOFT)]
     for i, (t, where, lines, accent, soft) in enumerate(cards):
         x = 56 + i * 508

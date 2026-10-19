@@ -1,4 +1,4 @@
-# mini-dts 四项质疑核查：单源假设 / 无 DDL / 无 HA / 无分布式编排
+# mini-oms 四项质疑核查：单源假设 / 无 DDL / 无 HA / 无分布式编排
 
 > 核查范围：`master` @ `1020d59`，逐文件读代码（3524 行 Java）+ README「已知局限」+ 单测/E2E。
 > 结论：**四个问题全部成立**，但性质不同 —— 2 项是"已声明的 demo 局限"，2 项是"未声明且含真 bug"。
@@ -18,13 +18,13 @@
 
 ### 1.1 已声明的那层（GtidState）
 
-`mini-dts-common/.../GtidState.java` 按 sid 记 `max(gno)`，README 明说「多源写同一实例需完整并集语义」。
+`mini-oms-common/.../GtidState.java` 按 sid 记 `max(gno)`，README 明说「多源写同一实例需完整并集语义」。
 这是**可接受的 demo 简化**：单主库 GTID 单调递增，max-per-sid 即正确。
 
 ### 1.2 未声明的缺陷 A：TABLE_MAP 只记表名、不记 database → 跨库串写 ⚠️
 
 ```java
-// mini-dts-store/.../BinlogStoreService.java:139-140
+// mini-oms-store/.../BinlogStoreService.java:139-140
 TableMapEventData tm = (TableMapEventData) data;
 tableById.put(tm.getTableId(), tm.getTable());      // ← tm.getDatabase() 被丢弃
 // :177
@@ -69,7 +69,7 @@ MySQL 的 `ALTER / CREATE / DROP / TRUNCATE / RENAME` 都以 **QUERY 事件**进
 
 ### 2.3 目标端业务表 DDL 完全靠人工
 
-`TargetSchemaInit.ensure()` 只建 `dts_incr_checkpoint` + `dts_dead_letter` 两张自用表；**没有 `SHOW CREATE TABLE` 复制、没有字段/索引/字符集比对**。E2E 测试也是自己在源和目标各跑一遍 `CREATE TABLE shop.orders`（`EndToEndDockerTest.java:93`）——这正说明建表不在产品能力内。
+`TargetSchemaInit.ensure()` 只建 `oms_incr_checkpoint` + `oms_dead_letter` 两张自用表；**没有 `SHOW CREATE TABLE` 复制、没有字段/索引/字符集比对**。E2E 测试也是自己在源和目标各跑一遍 `CREATE TABLE shop.orders`（`EndToEndDockerTest.java:93`）——这正说明建表不在产品能力内。
 
 ### 2.4 后果升级链（比"报错"难看）
 
@@ -125,14 +125,14 @@ client.connect();   // 阻塞；stop() 或异常时返回
 
 | 断点 | 存储位置 | 能否共享 |
 |---|---|---|
-| 全量 chunk 断点 | CM 侧 H2 文件（`dts_full_checkpoint`，`jdbc:h2:file:./data/...AUTO_SERVER`） | ❌ 单机磁盘 |
-| 增量位点 | 目标库 `dts_incr_checkpoint`（与业务数据同事务，设计正确） | ✅ |
+| 全量 chunk 断点 | CM 侧 H2 文件（`oms_full_checkpoint`，`jdbc:h2:file:./data/...AUTO_SERVER`） | ❌ 单机磁盘 |
+| 增量位点 | 目标库 `oms_incr_checkpoint`（与业务数据同事务，设计正确） | ✅ |
 
 断点两处异地：就算把进程搬到另一台机器，全量断点也没了。
 
 ### 3.6 没有双跑保护
 
-无分布式锁 / 租约 / leader 选举。两个实例同时 `start` 同一任务 = 两个 binlog 客户端 + 两边互相覆盖 `dts_incr_checkpoint`，目标端虽有幂等 upsert 兜底，但位点可能**倒退**（旧事务后提交）→ 重复回放窗口放大。
+无分布式锁 / 租约 / leader 选举。两个实例同时 `start` 同一任务 = 两个 binlog 客户端 + 两边互相覆盖 `oms_incr_checkpoint`，目标端虽有幂等 upsert 兜底，但位点可能**倒退**（旧事务后提交）→ 重复回放窗口放大。
 
 ### 3.7 可观测性缺口
 
@@ -180,7 +180,7 @@ worker 注册/心跳、任务切片下发、租约与超时回收、故障转移
 
 ### 4.6 对照 OMS 真实形态
 
-| 组件 | OMS 真实形态 | mini-dts 现状 |
+| 组件 | OMS 真实形态 | mini-oms 现状 |
 |---|---|---|
 | CM | 独立服务 + 共享元数据库 + 多实例 | 与执行同进程，元数据本地 H2 文件 |
 | Store | 独立拉取进程，可多实例、可共享 | 进程内线程，1 任务 1 客户端 |
@@ -207,7 +207,7 @@ worker 注册/心跳、任务切片下发、租约与超时回收、故障转移
 
 **P2 — DDL**
 
-8. `QUERY` 事件里识别 DDL：先落 `dts_ddl_event` 表 + 指标 + 告警，再按白名单（如 `ADD COLUMN`）尝试执行并刷新元数据缓存，白名单外则暂停任务等人工
+8. `QUERY` 事件里识别 DDL：先落 `oms_ddl_event` 表 + 指标 + 告警，再按白名单（如 `ADD COLUMN`）尝试执行并刷新元数据缓存，白名单外则暂停任务等人工
 9. 建任务时落一份「列指纹」，运行期定期比对，提前发现 schema 漂移
 
 **P3 — 分布式**

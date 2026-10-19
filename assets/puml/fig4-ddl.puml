@@ -12,7 +12,7 @@ skinparam activity {
   DiamondBackgroundColor #fef3c7
   DiamondBorderColor #fbbf24
 }
-title 源端改了表结构，mini-dts 怎么办？
+title 源端改了表结构，mini-oms 怎么办？
 
 start
 :binlog 里出现一条 QUERY 事件\n（DDL 就藏在这里）;
@@ -29,7 +29,7 @@ if (纯追加列的 ALTER？\nALTER TABLE t ADD COLUMN …) then (是 · 白名�
   :继续同步（任务不中断）;
   stop
 else (否)
-  :写一条记录到目标库 dts_ddl_event\n（语句原文 + 原因）;
+  :写一条记录到目标库 oms_ddl_event\n（语句原文 + 原因）;
   :把任务置为 PAUSED;
   :等人看过、在目标库执行完再 resume;
   stop

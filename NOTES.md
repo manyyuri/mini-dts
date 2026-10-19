@@ -12,15 +12,15 @@
 ## 目的（重要，2026-10-19 澄清）
 
 用户说：「**我是为了理解 OMS 做的**」。所以：
-- mini-dts 是探针，不是产品；一切改动的价值 = 它能不能验证 OMS 的某个设计决策；
+- mini-oms 是探针，不是产品；一切改动的价值 = 它能不能验证 OMS 的某个设计决策；
 - 讨论功能时先定位「落在 OMS 六段的哪一段」，再谈实现；
-- 不要主动扩张 mini-dts 的能力（异构、多源、分布式），除非它换来一个可验证的认知。
+- 不要主动扩张 mini-oms 的能力（异构、多源、分布式），除非它换来一个可验证的认知。
 
 ## 工作笔记
 
 - 语雀目标位置：`lijunying.ljy/ert5gc` 的「20261019」日志文档下（uuid `2bWEoDKZjIeEUQaF`→实际 `2bWEoDKZjIeEUQaP`）
 - 已交付：`https://yuque.antfin.com/lijunying.ljy/ert5gc/rr0ggo305g6h5z1d`
-  （标题：mini-dts 重讲：从一条数据的旅程看迁移同步引擎）
+  （标题：mini-oms 重讲：从一条数据的旅程看迁移同步引擎）
 - 配图生成脚本：`assets/diagrams.py`（Pillow，静态图 + GIF）、`assets/puml/*.puml`（PlantUML）
 - 图片校验方式：本会话模型看不了图，用 `visionpower`（kimi-k3）做 OCR/排版复核，
   重点问「有无截断/重叠/乱码/箭头悬空」。

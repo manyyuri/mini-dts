@@ -1,4 +1,4 @@
-/* mini-dts 课程共享样式：所有 lesson / reference 都链这一份，保证看起来是同一门课。 */
+/* mini-oms 课程共享样式：所有 lesson / reference 都链这一份，保证看起来是同一门课。 */
 
 :root {
   --ink: #1f2937;

@@ -1,0 +1,32 @@
+spring:
+  application:
+    name: mini-oms
+  datasource:
+    # CM 元数据库：单机 demo 用本地 H2 文件；多节点部署时换成共享 MySQL
+    # （eg. jdbc:mysql://meta-host:3306/minioms_meta），SchemaInit 会自动识别方言建表
+    url: jdbc:h2:file:./data/minioms-meta;MODE=MySQL;AUTO_SERVER=TRUE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+
+server:
+  port: 8080
+
+minioms:
+  # 节点标识：所有租约/日志都带上它，多实例部署时一眼看出谁在跑
+  node-id: ${HOSTNAME:local}:${random.int[1000,9999]}
+  # 本节点最多同时跑几个任务（超过则拒绝 start / 延后接管）
+  max-concurrent-tasks: 8
+  # 实例级总吞吐上限（行/秒），0 表示不限；多任务叠加时用它兜底保护源库
+  global-rows-per-second: 200000
+  # 任务租约：谁跑某个任务的唯一凭据
+  lease-ttl: 30s
+  lease-renew-interval-millis: 10000   # 续租间隔（毫秒，必须小于 lease-ttl）
+  # 启动时把 RUNNING_* 的任务接管回来（进程重启 / 别的节点挂了）
+  recover-on-startup: true
+  # 增量断线重连策略
+  max-reconnects: 10
+  reconnect-initial-backoff: 500ms
+  reconnect-max-backoff: 10s
+  # 单事务内存缓冲行数上限，超过就先落一批（防大事务 OOM）
+  max-buffered-rows: 20000

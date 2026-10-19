@@ -25,5 +25,5 @@
 
 ## 影响
 
-第 1 课（`lessons/0001-mini-dts-panorama.md`）按上述结构重写，含 4 张静态图 + 1 个 GIF 动画。
+第 1 课（`lessons/0001-mini-oms-panorama.md`）按上述结构重写，含 4 张静态图 + 1 个 GIF 动画。
 以后新增课程继续沿用：图 → 类比 → 机制 → 失败案例 → 索引。

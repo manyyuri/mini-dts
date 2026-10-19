@@ -4,21 +4,21 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <groupId>com.minidts</groupId>
-  <artifactId>mini-dts</artifactId>
+  <groupId>com.minioms</groupId>
+  <artifactId>mini-oms</artifactId>
   <version>0.1.0-SNAPSHOT</version>
   <packaging>pom</packaging>
-  <name>mini-dts</name>
+  <name>mini-oms</name>
   <description>MySQL→MySQL 迁移同步引擎：全量分片 + binlog 增量 + 断点续传 + 幂等回放 + CRC 校验</description>
 
   <modules>
-    <module>mini-dts-common</module>
-    <module>mini-dts-connector</module>
-    <module>mini-dts-full</module>
-    <module>mini-dts-store</module>
-    <module>mini-dts-verifier</module>
-    <module>mini-dts-cm</module>
-    <module>mini-dts-starter</module>
+    <module>mini-oms-common</module>
+    <module>mini-oms-connector</module>
+    <module>mini-oms-full</module>
+    <module>mini-oms-store</module>
+    <module>mini-oms-verifier</module>
+    <module>mini-oms-cm</module>
+    <module>mini-oms-starter</module>
   </modules>
 
   <properties>

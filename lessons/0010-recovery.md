@@ -12,9 +12,9 @@
 
 | # | 状态 | 存在哪 | 记录什么 | 谁读它 |
 |---|---|---|---|---|
-| ① | 全量断点 | 目标库 `dts_full_checkpoint` | 哪个分片上界已搬完 | 任何接管者 |
-| ② | 增量位点 | 目标库 `dts_incr_checkpoint` | 回放到哪个事务 | 任何接管者 |
-| ③ | 任务租约 | 元数据库 `dts_task_lease` | 这个任务归哪个节点跑 | 抢任务的节点 |
+| ① | 全量断点 | 目标库 `oms_full_checkpoint` | 哪个分片上界已搬完 | 任何接管者 |
+| ② | 增量位点 | 目标库 `oms_incr_checkpoint` | 回放到哪个事务 | 任何接管者 |
+| ③ | 任务租约 | 元数据库 `oms_task_lease` | 这个任务归哪个节点跑 | 抢任务的节点 |
 
 共同点：**都放在「别人也看得到」的地方**。放在内存或本地磁盘的记忆，换台机器就没了。
 
@@ -68,4 +68,4 @@
 
 ## 想看代码
 
-`mini-dts-cm/.../TaskLeaseManager.java`、`mini-dts-starter/.../TaskRecovery.java`、`MigrationEngineImpl.java`
+`mini-oms-cm/.../TaskLeaseManager.java`、`mini-oms-starter/.../TaskRecovery.java`、`MigrationEngineImpl.java`

@@ -57,4 +57,4 @@
 
 ## 想看代码
 
-`mini-dts-starter/.../MigrationEngineImpl.java`（`createTask`）、`mini-dts-store/.../MySqlEnvChecker.java`
+`mini-oms-starter/.../MigrationEngineImpl.java`（`createTask`）、`mini-oms-store/.../MySqlEnvChecker.java`

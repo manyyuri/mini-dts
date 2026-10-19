@@ -57,4 +57,4 @@
 
 ## 想看代码
 
-`mini-dts-full/src/test/.../FullTransferH2Test.java`（崩溃注入的写法）、`mini-dts-starter/src/test/.../EndToEndDockerTest.java`
+`mini-oms-full/src/test/.../FullTransferH2Test.java`（崩溃注入的写法）、`mini-oms-starter/src/test/.../EndToEndDockerTest.java`

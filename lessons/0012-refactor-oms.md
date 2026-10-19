@@ -59,4 +59,4 @@
 
 ## 想看代码
 
-接口端口：`mini-dts-connector/.../Sink.java`、`mini-dts-common/.../TargetAdmin.java`、`FullCheckpointStore.java`、`TaskStateNotifier.java`
+接口端口：`mini-oms-connector/.../Sink.java`、`mini-oms-common/.../TargetAdmin.java`、`FullCheckpointStore.java`、`TaskStateNotifier.java`

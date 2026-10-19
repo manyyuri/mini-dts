@@ -16,7 +16,7 @@
 ```
 BEGIN
   写业务表（UPSERT / DELETE）
-  更新进度表（dts_incr_checkpoint ← 新 GTID）
+  更新进度表（oms_incr_checkpoint ← 新 GTID）
 COMMIT
 ```
 
@@ -71,4 +71,4 @@ COMMIT
 
 ## 想看代码
 
-`mini-dts-connector/.../MySqlSink.java`（`doWrite`）、`TargetSchemaInit.java`（位点表）
+`mini-oms-connector/.../MySqlSink.java`（`doWrite`）、`TargetSchemaInit.java`（位点表）
