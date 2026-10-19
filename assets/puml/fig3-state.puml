@@ -1,0 +1,49 @@
+@startuml
+!pragma layout smetana
+skinparam dpi 160
+skinparam defaultFontName "PingFang SC"
+skinparam defaultFontSize 17
+skinparam shadowing false
+skinparam roundcorner 12
+skinparam ArrowColor #64748b
+skinparam ArrowThickness 2
+skinparam state {
+  BackgroundColor #ffffff
+  BorderColor #cbd5e1
+  FontSize 17
+}
+title 任务的一生：状态机
+
+state "INIT\n刚建好" as INIT
+state "RUNNING_FULL\n全量搬运中" as RF
+state "FULL_DONE\n全量完成" as FD
+state "RUNNING_INCR\n增量追平中" as RI
+state "PAUSED\n暂停（断点保留）" as P
+state "ERROR\n出错，等人处理" as E
+state "FINISHED\n收尾完成" as F
+
+[*] --> INIT : 建任务（校验环境/主键/结构）
+INIT --> RF : start（先记下一致性位点）
+RF --> FD : 所有分片搬完
+FD --> RI : 自动进入增量
+RI --> F : finish
+
+RF --> P : pause
+RI --> P : pause
+P --> RF : resume（从断点续搬）
+P --> RI : resume（从位点续读）
+RF --> E : 重试耗尽 / 写不进去
+RI --> E : 重试耗尽 / 结构漂移
+E --> RF : resume
+E --> RI : resume
+
+note bottom of P
+  暂停/出错都会释放「任务租约」，
+  好让别的节点可以接管
+end note
+
+note bottom of RI
+  源端出现不能自动处理的 DDL 时，
+  任务会被置为 PAUSED 等人工确认
+end note
+@enduml

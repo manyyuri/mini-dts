@@ -1,0 +1,21 @@
+# NOTES — 教学偏好与工作笔记
+
+## 用户偏好（重要）
+
+- **先图后字**：讲系统一律先给一张全景/流程图，再配文字；纯文字长文档读不进去。
+- **不要逐行讲代码**：`docs/项目讲解.md` 那种逐行注释对用户无效（已明确反馈看不懂）。
+  代码只在「想深入时看哪里」这类索引里出现，且只给文件名 + 一句话职责。
+- **类比优先**：用生活里的过程（搬家/对清单/记账本）承载抽象概念，再回扣术语。
+- **每段只讲一件事**：一张图 + 三五个短句，别堆砌。
+- **交付要去语雀**：用户习惯在语雀看，成品要能直接打开（图要上传，不能留本地路径）。
+
+## 工作笔记
+
+- 语雀目标位置：`lijunying.ljy/ert5gc` 的「20261019」日志文档下（uuid `2bWEoDKZjIeEUQaF`→实际 `2bWEoDKZjIeEUQaP`）
+- 已交付：`https://yuque.antfin.com/lijunying.ljy/ert5gc/rr0ggo305g6h5z1d`
+  （标题：mini-dts 重讲：从一条数据的旅程看迁移同步引擎）
+- 配图生成脚本：`assets/diagrams.py`（Pillow，静态图 + GIF）、`assets/puml/*.puml`（PlantUML）
+- 图片校验方式：本会话模型看不了图，用 `visionpower`（kimi-k3）做 OCR/排版复核，
+  重点问「有无截断/重叠/乱码/箭头悬空」。
+- 语雀写入：`yuque create doc --target-uuid <父文档 uuid> --upload-images --yes --json`
+  （`--plan` 先预览；`--body-file` 走文件，避免转义）
