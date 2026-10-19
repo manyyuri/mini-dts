@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# 本仓库必须用 JDK 17 跑 Maven：
+#   - pom.xml: maven.compiler.release=17
+#   - Spring Boot 3.2 本身要求 Java 17+
+# 直接敲 `mvn` 会用系统默认 JDK（本机是 8），于是出现
+#   "class file version 61.0 ... only recognizes up to 52.0"
+# 用本脚本代替 `mvn` 即可：./mvn17 test
+set -euo pipefail
+
+CANDIDATES=(
+  "${JAVA17_HOME:-}"
+  "$HOME/jdk17"
+  "/opt/homebrew/opt/openjdk@17"
+  "/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home"
+  "/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home"
+)
+
+FOUND=""
+for c in "${CANDIDATES[@]}"; do
+  if [ -n "$c" ] && [ -x "$c/bin/java" ] && "$c/bin/java" -version 2>&1 | grep -q 'version "17'; then
+    FOUND="$c"
+    break
+  fi
+done
+
+if [ -z "$FOUND" ]; then
+  echo "✗ 找不到 JDK 17。安装方式任选其一：" >&2
+  echo "    brew install openjdk@17" >&2
+  echo "    或下载后解压到 ~/jdk17（脚本会自动识别）" >&2
+  echo "  已有其它路径可设：JAVA17_HOME=/path/to/jdk17 ./mvn17 test" >&2
+  exit 1
+fi
+
+export JAVA_HOME="$FOUND"
+export PATH="$JAVA_HOME/bin:$PATH"
+echo "→ 使用 JAVA_HOME=${JAVA_HOME}"
+echo "  $("$JAVA_HOME/bin/java" -version 2>&1 | head -1)"
+exec mvn "$@"

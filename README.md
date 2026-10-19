@@ -32,10 +32,16 @@ MySQL → MySQL 迁移同步引擎（对标阿里 OMS 架构的 mini 实现）�
 ## 快速开始
 
 ```bash
-mvn test                                    # 71 个单测（H2，无需 Docker）
-mvn test -pl mini-dts-starter               # 无 Docker 时 E2E 自动跳过
-mvn -pl mini-dts-starter spring-boot:run    # 起服务 :8080
+# 本仓库需要 JDK 17（pom: maven.compiler.release=17；Spring Boot 3.2 同样要求 17+）
+# 系统默认 java 是 8 时，直接跑 mvn 会报
+#   "class file version 61.0 ... only recognizes up to 52.0"
+./mvn17 test                                # 用 JDK 17 跑全部单测（H2，无需 Docker）
+./mvn17 test -pl mini-dts-starter           # 无 Docker 时 E2E 自动跳过
+./mvn17 -pl mini-dts-starter spring-boot:run  # 起服务 :8080
 ```
+
+> `./mvn17` 是仓库自带的包装脚本：自动找 JDK 17（`~/jdk17`、Homebrew `openjdk@17` 等），
+> 找到才执行 `mvn`，找不到就报错告诉你怎么装。也可以自己 `export JAVA_HOME=~/jdk17` 后用 `mvn`。
 
 ```bash
 # 建任务（源库需 binlog_format=ROW, binlog_row_image=FULL, gtid_mode=ON）
