@@ -72,6 +72,36 @@
           <parameters>true</parameters>
         </configuration>
       </plugin>
+      <!--
+        快速失败：JDK 不是 17+ 时立刻报一句人话，
+        而不是等 surefire fork 出 "class file version 61.0 ... up to 52.0" 这种谜语。
+        （根因：本仓库 release=17，Spring Boot 3.2 也要求 17+；用系统默认的 JDK 8 跑必挂。）
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <version>3.4.1</version>
+        <executions>
+          <execution>
+            <id>require-jdk-17</id>
+            <phase>validate</phase>
+            <goals>
+              <goal>enforce</goal>
+            </goals>
+            <configuration>
+              <rules>
+                <requireJavaVersion>
+                  <version>[17,)</version>
+                  <message>本仓库需要 JDK 17+（maven.compiler.release=17，Spring Boot 3.2 亦然）。
+当前使用的是旧版 JDK。解决办法：
+  1) ./mvn17 test        ← 仓库自带脚本，自动选 JDK 17
+  2) export JAVA_HOME=~/jdk17 &amp;&amp; mvn test</message>
+                </requireJavaVersion>
+              </rules>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
     </plugins>
     <pluginManagement>
       <plugins>
