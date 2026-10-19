@@ -9,27 +9,29 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.LinkedHashMap;
+import java.util.List;
 
 /**
  * 目标库自用表 DDL（全部建在目标库，与业务数据同库）。
  *
  * 红线 R2：dts_incr_checkpoint 必须建在目标库（与业务数据同库，才能同事务）。
- * 断点类数据也统一放目标库（dts_full_checkpoint）—— 这样任务换节点、换进程都能接着跑，
- * 不会被控制面所在机器绑死。
+ * 断点类数据也统一放目标库（dts_full_checkpoint）—— 换节点、换进程都能接着跑。
+ *
+ * 列类型与 upsert 语法全部交给 {@link SqlDialect}，自己不再判断「是不是 MySQL」。
  */
 public final class TargetSchemaInit {
 
     private TargetSchemaInit() {
     }
 
-    /**
-     * 建表（幂等）。{@code longText} 按目标库方言取：MySQL 没有 CLOB 类型，
-     * 老实现固定写 CLOB 在真实 MySQL 上建表会失败（H2 单测发现不了）。
-     */
     public static void ensure(Connection target) throws SQLException {
-        boolean mysql = isMysql(target);
-        String longText = mysql ? "LONGTEXT" : "CLOB";
-        String idType = "BIGINT AUTO_INCREMENT PRIMARY KEY";
+        ensure(target, SqlDialectFactory.detect(target));
+    }
+
+    public static void ensure(Connection target, SqlDialect dialect) throws SQLException {
+        String longText = dialect.longTextType();
+        String idType = dialect.autoIncrementPk();
         try (Statement st = target.createStatement()) {
             st.execute("""
                     CREATE TABLE IF NOT EXISTS dts_incr_checkpoint (
@@ -79,18 +81,19 @@ public final class TargetSchemaInit {
         }
     }
 
-    static boolean isMysql(Connection conn) throws SQLException {
-        return conn.getMetaData().getDatabaseProductName().toLowerCase().contains("mysql");
+    /** 位点写入（由 MySqlSink 在同一事务内调用）。 */
+    static void updateCheckpoint(Connection conn, String taskId, String gtidSet) throws SQLException {
+        updateCheckpoint(conn, taskId, gtidSet, SqlDialectFactory.detect(conn));
     }
 
-    /** 位点写入（由 MySqlSink 在同一事务内调用；MySQL 与 H2 方言各走各的 upsert）。 */
-    static void updateCheckpoint(Connection conn, String taskId, String gtidSet) throws SQLException {
-        String sql = isMysql(conn)
-                ? "INSERT INTO dts_incr_checkpoint(task_id, gtid_set, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) "
-                  + "ON DUPLICATE KEY UPDATE gtid_set = VALUES(gtid_set), updated_at = CURRENT_TIMESTAMP"
-                : "MERGE INTO dts_incr_checkpoint(task_id, gtid_set, updated_at) KEY(task_id) "
-                  + "VALUES (?, ?, CURRENT_TIMESTAMP)";
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+    static void updateCheckpoint(Connection conn, String taskId, String gtidSet, SqlDialect dialect)
+            throws SQLException {
+        LinkedHashMap<String, String> exprs = new LinkedHashMap<>();
+        exprs.put("task_id", "?");
+        exprs.put("gtid_set", "?");
+        exprs.put("updated_at", "CURRENT_TIMESTAMP");
+        try (PreparedStatement ps = conn.prepareStatement(
+                dialect.adminUpsert(null, "dts_incr_checkpoint", List.of("task_id"), exprs))) {
             ps.setString(1, taskId);
             ps.setString(2, gtidSet);
             ps.executeUpdate();

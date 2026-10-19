@@ -13,38 +13,44 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * MySQL 幂等批量写入。
+ * 幂等批量写入：**只负责数据面职责** —— 事务、批次切分、位点、死信。
+ * SQL 长什么样交给 {@link SqlDialect}（MySQL / PostgreSQL / Oracle 各一份实现）。
  *
- * 红线 R4 · 数据与位点同事务：advanceGtidSet 非空时，位点 UPDATE 与业务写入在同一事务内提交，
- * 任一失败整体回滚——这是 at-least-once → 按事务 exactly-once 的分界。
- * 红线 R5 · 顺序：按【连续同表同操作】分组建批，保持全局到达顺序；并行只允许跨任务，
- * 同一任务的批次由调用方串行投递（全量分片间无顺序约束，增量事务间天然有序）。
- * 幂等第二层：INSERT... ON DUPLICATE KEY UPDATE（前提：目标表主键/唯一键与源一致，建任务时校验）。
+ * 这样切的意义：加一个目标库 = 新增一个方言类，不必再碰事务与位点这段最容易改坏的代码。
  *
- * 库名：{@code targetSchema} 非空时所有语句都写全限定名 —— 目标库由任务显式声明并校验过，
- * 不再依赖连接 URL 的默认库（否则 URL 与任务 schema 不一致会静默写错库）。
+ * 红线 R4 · 数据与位点同事务：advanceGtidSet 非空时，位点 UPDATE 与业务写入在同一事务内提交。
+ * 红线 R5 · 顺序：按【连续同表同操作】分组建批，保持全局到达顺序。
  */
 public class MySqlSink implements Sink {
-
-    /** 单条 INSERT 最大行数：再大就撞 max_allowed_packet，一个事务几万行时必须切片。 */
-    static final int MAX_ROWS_PER_STATEMENT = 500;
 
     private final Connection connection;
     private final String taskId;
     private final String targetSchema;
     private final Map<String, List<String>> pkColumnsByTable;
+    private final SqlDialect dialect;
 
-    /** 兼容旧用法（H2 单测：库名由连接决定，不加限定）。 */
+    /** 兼容旧用法（方言按连接自动探测）。 */
     public MySqlSink(Connection connection, String taskId, Map<String, List<String>> pkColumnsByTable) {
-        this(connection, null, taskId, pkColumnsByTable);
+        this(connection, null, taskId, pkColumnsByTable, SqlDialectFactory.detect(connection));
     }
 
     public MySqlSink(Connection connection, String targetSchema, String taskId,
                      Map<String, List<String>> pkColumnsByTable) {
+        this(connection, targetSchema, taskId, pkColumnsByTable, SqlDialectFactory.detect(connection));
+    }
+
+    /** 显式指定方言（对照测试 / 需要覆盖探测逻辑时用）。 */
+    public MySqlSink(Connection connection, String targetSchema, String taskId,
+                     Map<String, List<String>> pkColumnsByTable, SqlDialect dialect) {
         this.connection = connection;
         this.taskId = taskId;
         this.targetSchema = targetSchema;
         this.pkColumnsByTable = Map.copyOf(pkColumnsByTable);
+        this.dialect = dialect;
+    }
+
+    public SqlDialect dialect() {
+        return dialect;
     }
 
     @Override
@@ -69,7 +75,7 @@ public class MySqlSink implements Sink {
                 apply(run);
             }
             if (advanceGtidSet != null) {
-                TargetSchemaInit.updateCheckpoint(connection, taskId, advanceGtidSet);
+                TargetSchemaInit.updateCheckpoint(connection, taskId, advanceGtidSet, dialect);
             }
             connection.commit();
         } catch (SQLException e) {
@@ -105,8 +111,9 @@ public class MySqlSink implements Sink {
 
     private void apply(Run run) throws SQLException {
         if (run.upsert()) {
-            for (int i = 0; i < run.rows().size(); i += MAX_ROWS_PER_STATEMENT) {
-                applyUpsert(run.rows().subList(i, Math.min(run.rows().size(), i + MAX_ROWS_PER_STATEMENT)));
+            int limit = dialect.maxRowsPerStatement();
+            for (int i = 0; i < run.rows().size(); i += limit) {
+                applyUpsert(run.rows().subList(i, Math.min(run.rows().size(), i + limit)));
             }
         } else {
             applyDeletes(run.rows());
@@ -115,17 +122,8 @@ public class MySqlSink implements Sink {
 
     private void applyUpsert(List<RowRecord> rows) throws SQLException {
         RowRecord first = rows.get(0);
-        String table = qualify(first.table());
-        String cols = String.join(",", first.columns().stream().map(MySqlSink::quote).toList());
-        String placeholders = "(" + "?,".repeat(first.columns().size() - 1) + "?)";
-        String updates = first.columns().stream()
-                .map(c -> quote(c) + " = VALUES(" + quote(c) + ")")
-                .reduce((a, b) -> a + "," + b)
-                .orElse("");
-        // H2(MySQL 模式) 只认 VALUES() 形式；MySQL 8 也兼容（deprecation warning 可接受）
-        String sql = "INSERT INTO " + table + " (" + cols + ") VALUES "
-                + (placeholders + ",").repeat(rows.size() - 1) + placeholders
-                + " ON DUPLICATE KEY UPDATE " + updates;
+        List<String> pk = pkColumnsByTable.getOrDefault(first.table(), List.of(first.columns().get(0)));
+        String sql = dialect.upsert(targetSchema, first.table(), first.columns(), pk, rows.size());
         try (PreparedStatement ps = connection.prepareStatement(sql)) {
             int i = 1;
             for (RowRecord r : rows) {
@@ -143,9 +141,8 @@ public class MySqlSink implements Sink {
         if (pks == null || pks.isEmpty()) {
             throw new DtsException("表 " + first.table() + " 缺少主键元数据，无法生成 DELETE");
         }
-        String where = pks.stream().map(pk -> quote(pk) + " = ?").reduce((a, b) -> a + " AND " + b).orElse("");
         try (PreparedStatement ps = connection.prepareStatement(
-                "DELETE FROM " + qualify(first.table()) + " WHERE " + where)) {
+                dialect.delete(targetSchema, first.table(), pks))) {
             for (RowRecord r : rows) {
                 int i = 1;
                 for (String pk : pks) {
@@ -184,13 +181,5 @@ public class MySqlSink implements Sink {
             connection.close();   // Sink 拥有并独占自己的目标连接（worker 级生命周期）
         } catch (SQLException ignored) {
         }
-    }
-
-    private String qualify(String table) {
-        return targetSchema == null ? quote(table) : quote(targetSchema) + "." + quote(table);
-    }
-
-    static String quote(String id) {
-        return "`" + id.replace("`", "``") + "`";
     }
 }

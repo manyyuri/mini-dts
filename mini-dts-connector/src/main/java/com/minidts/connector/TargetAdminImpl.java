@@ -12,6 +12,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -87,18 +88,14 @@ public class TargetAdminImpl implements TargetAdmin {
 
     @Override
     public void putFingerprints(String taskId, Map<String, String> fingerprintsByTable) {
-        boolean mysql;
-        try {
-            mysql = TargetSchemaInit.isMysql(connection);
-        } catch (SQLException e) {
-            throw new DtsException("读取目标库元数据失败: " + e.getMessage(), e);
-        }
-        String sql = mysql
-                ? "INSERT INTO dts_schema_fingerprint(task_id, table_name, fingerprint, updated_at) "
-                  + "VALUES (?, ?, ?, CURRENT_TIMESTAMP) "
-                  + "ON DUPLICATE KEY UPDATE fingerprint = VALUES(fingerprint), updated_at = CURRENT_TIMESTAMP"
-                : "MERGE INTO dts_schema_fingerprint(task_id, table_name, fingerprint, updated_at) "
-                  + "KEY(task_id, table_name) VALUES (?, ?, ?, CURRENT_TIMESTAMP)";
+        SqlDialect dialect = SqlDialectFactory.detect(connection);
+        LinkedHashMap<String, String> exprs = new LinkedHashMap<>();
+        exprs.put("task_id", "?");
+        exprs.put("table_name", "?");
+        exprs.put("fingerprint", "?");
+        exprs.put("updated_at", "CURRENT_TIMESTAMP");
+        String sql = dialect.adminUpsert(null, "dts_schema_fingerprint",
+                List.of("task_id", "table_name"), exprs);
         try (PreparedStatement ps = connection.prepareStatement(sql)) {
             for (Map.Entry<String, String> e : fingerprintsByTable.entrySet()) {
                 ps.setString(1, taskId);
@@ -125,12 +122,13 @@ public class TargetAdminImpl implements TargetAdmin {
     }
 
     /** 只在 DDL 语句里补库名前缀：`ALTER TABLE orders ...` → `ALTER TABLE `shop`.`orders` ...`。 */
-    private static String qualify(String schema, String sql) {
+    private String qualify(String schema, String sql) {
         Matcher m = TABLE_REF.matcher(sql);
         if (!m.find()) {
             return sql;
         }
-        String replacement = m.group(1) + MySqlSink.quote(schema) + "." + MySqlSink.quote(m.group(3));
+        SqlDialect dialect = SqlDialectFactory.detect(connection);
+        String replacement = m.group(1) + dialect.quote(schema) + "." + dialect.quote(m.group(3));
         return sql.substring(0, m.start()) + replacement + sql.substring(m.end());
     }
 }

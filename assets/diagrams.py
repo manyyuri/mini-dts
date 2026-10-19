@@ -938,6 +938,72 @@ ALL = {
     "e1": e1_tests, "e2": e2_metrics, "e3": e3_gates,
 }
 
+
+
+# ── 异构 SQL：方言缝合线 ─────────────────────────────────────
+def d1_dialect_seam():
+    c = Lesson(1600, 980, "异构 SQL：把「方言」从写入逻辑里撕出来",
+               "现在 SQL 是拼在写入端里的，加一个目标库就得改写入端；把方言做成一条缝合线，加库就只是加一个类",
+               takeaway="一句话：Sink 只负责「事务 + 批次 + 位点」，SQL 长什么样交给 SqlDialect —— 新增一个目标库 = 新增一个方言类 + 一张类型映射表。")
+
+    # 现状
+    c.text(56, 168, "现状：方言焊在写入端", 20, SEMIBOLD, RED)
+    c.d.rounded_rectangle([56, 204, 720, 470], radius=14, fill=CARD, outline=RED, width=2)
+    c.text(76, 220, "MySqlSink", 19, SEMIBOLD, INK)
+    c.text(76, 252, "一个类里同时装了四件事", 15, REGULAR, MUTED)
+    for i, line in enumerate(["① 事务与提交顺序", "② 批次切分（谁跟谁能合并）",
+                              "③ SQL 拼装（反引号 / ON DUPLICATE KEY UPDATE）",
+                              "④ 位点推进"]):
+        c.text(76, 288 + i * 26, line, 15, REGULAR, MUTED)
+    c.text(76, 402, "→ 想加 PostgreSQL：得在① ② ④ 都在场的地方", 15, MEDIUM, RED)
+    c.text(76, 428, "   改 ③，很容易把事务语义改坏", 15, MEDIUM, RED)
+
+    # 目标
+    c.text(776, 168, "目标：方言是一条可替换的缝合线", 20, SEMIBOLD, GREEN)
+    c.d.rounded_rectangle([776, 204, 1544, 470], radius=14, fill=CARD, outline=GREEN, width=2)
+    c.text(796, 220, "Sink（只做数据面职责）", 17, SEMIBOLD, INK)
+    c.text(796, 250, "事务 · 批次 · 位点 · 死信", 15, REGULAR, MUTED)
+    c.arrow(796, 296, 900, 296, GREEN)
+    c.d.rounded_rectangle([910, 264, 1200, 340], radius=12, fill=GREEN_SOFT, outline=GREEN, width=2)
+    c.text(926, 276, "SqlDialect（端口）", 16, SEMIBOLD, GREEN)
+    c.text(926, 306, "quote / upsert / ddl / paging", 14, REGULAR, MUTED)
+    c.arrow(1206, 296, 1256, 296, GREEN)
+    for i, (t, sub, accent, soft) in enumerate([("MySQL", "`x`  ON DUPLICATE KEY UPDATE", BLUE, BLUE_SOFT),
+                                               ("PostgreSQL", "\"x\"  ON CONFLICT … DO UPDATE", AMBER, AMBER_SOFT),
+                                               ("Oracle", "\"X\"  MERGE INTO …", RED, RED_SOFT)]):
+        y = 214 + i * 82
+        c.d.rounded_rectangle([1266, y, 1524, y + 68], radius=10, fill=soft, outline=accent, width=2)
+        c.text(1282, y + 10, t, 16, SEMIBOLD, accent)
+        c.text(1282, y + 38, sub, 12, REGULAR, MUTED)
+
+    # 缝合线上的四个职责
+    c.text(56, 500, "缝合线上要固定的四件事（每件事都必须按目标库实现）", 20, SEMIBOLD, INK)
+    duties = [("标识符引用", ["反引号 / 双引号 / 大小写折叠"], MUTED, (241, 245, 249)),
+              ("幂等写法", ["ON DUPLICATE / ON CONFLICT", "MERGE INTO / 先删后插"], BLUE, BLUE_SOFT),
+              ("自用表 DDL", ["自增 / 长文本 / upsert 语法"], AMBER, AMBER_SOFT),
+              ("分页与边界", ["LIMIT / FETCH FIRST", "主键比较的隐式转换"], GREEN, GREEN_SOFT)]
+    for i, (t, lines, accent, soft) in enumerate(duties):
+        x = 56 + i * 380
+        c.d.rounded_rectangle([x, 546, x + 356, 668], radius=12, fill=CARD, outline=accent, width=2)
+        c.text(x + 18, 560, t, 18, SEMIBOLD, accent)
+        for j, line in enumerate(lines):
+            c.text(x + 18, 596 + j * 24, "· " + line, 15, REGULAR, MUTED)
+
+    # 与已有设计的关系
+    c.note(56, 700, 720,
+           "RowRecord 已经是「与方言无关」的行模型（第 2 课），所以缝合线只需要画在「行 → SQL」这一层，"
+           "全量、增量、校验三条通道都不用改。",
+           GREEN, GREEN_SOFT, "为什么这条缝合线位置是最好的")
+    c.note(812, 700, 732,
+           "CRC 校验是最容易被异构打破的一环：同一个值在 MySQL 与 PG 里的字符串渲染不同，"
+           "所以比较必须在 canonical 编码层做，不能依赖各库自己的 toString。",
+           RED, RED_SOFT, "最容易被忽略的坑")
+    return c.close("fig-d1-dialect-seam.png")
+
+
+ALL["d1"] = d1_dialect_seam
+
+
 if __name__ == "__main__":
     args = sys.argv[1:] or ["all"]
     names = list(ALL) if args == ["all"] else args

@@ -5,6 +5,117 @@
 
 ---
 
+## 0.5 最小探针：为了「理解 OMS」，其实只需要做到这里
+
+> 前提：目标是理解 OMS，不是做产品。所以问题不是「怎么支持异构」，而是
+> **「最少做多少，才能真的摸到 OMS 为什么要那样切分」。**
+
+### 两个门槛，按时间选
+
+| 版本 | 耗时 | 做什么 | 能不能算「理解了」 |
+|---|---|---|---|
+| **极简版（先做这个）** | ~2 小时 | 不写代码，只填一张「五个方言点 × 三种目标库」差异矩阵 | ✅ 能说清"哪里必须分叉、为什么" |
+| **落地版（可选）** | ~半天 | 抽 `SqlDialect` 端口 + 加一个**只生成 SQL 不连库**的第二方言 + 对照测试 | ✅ 手感：知道哪些逻辑必须留在 Sink、哪些能下沉 |
+
+两个版本之上就**不要再做了**（理由见「明确不做」）。
+
+### 极简版：只填这张矩阵（5 行 × 3 列）
+
+| 方言点 | MySQL 目标 | PostgreSQL 目标 | Oracle 目标 | 分叉的后果 |
+|---|---|---|---|---|
+| ① 标识符引用 | `` `x` `` | `"x"`，未引用会折叠小写 | `"X"`，默认大写 | 只影响生成 SQL，不影响语义 |
+| ② **幂等写法** | `ON DUPLICATE KEY UPDATE … VALUES(c)` | `ON CONFLICT (pk) DO UPDATE SET c = EXCLUDED.c`（**必须显式给冲突键**） | **无原生 upsert**，只能 `MERGE INTO`（有并发竞态） | **最关键**：幂等一旦不可得，"重放安全"这个地基要换方案 |
+| ③ 批量形态 | 多值 INSERT，受 `max_allowed_packet` 限制 | 多值 INSERT，占位符参数上限 65535 | `MERGE` 单条更常见，批量要拼 `INSERT ALL` | 影响批大小与性能，不改语义 |
+| ④ 自用表 DDL | `AUTO_INCREMENT` / `LONGTEXT` | `BIGSERIAL` / `TEXT` | `SEQUENCE + TRIGGER` / `CLOB` | 位点表、DDL 台账都要按方言建 |
+| ⑤ 值比较口径 | `decimal scale`、`datetime(6)`、无 boolean | `numeric`、`timestamptz`、有 boolean | `NUMBER`、`DATE 含时分秒` | **决定了校验 CRC 能否跨库** |
+
+填完这张表，你已经拿到 OMS 里两个最难问题的答案：
+- **为什么增量写入（Connector）要按目标类型分实现** → 因为第 ② 行：幂等写法的"可得性"不同；
+- **为什么校验要单独做一套口径** → 因为第 ⑤ 行：同一个值在不同库的渲染不同。
+
+### 落地版：三步（只在极简版之后、且想动手时做）
+
+1. 抽 `SqlDialect` 端口，把 `MySqlSink` 里的 SQL 生成搬出去（**行为零变化**，现有测试全绿）。
+   → 摸到 OMS 里 Connector 的边界：**事务/批次/位点留在 Sink，SQL 形状下沉到方言**。
+2. 加一个第二方言，**只要生成 SQL、不要连库**，再写一个"同一批 `RowRecord` 两种方言生成的 SQL 并排"的对照测试。
+   → 不需要真实 PG 实例，成本接近零。
+3. 用第 1、2 步的代码回答三个问题（写进 `learning-records/`）：
+   - 哪些片段是**与库无关**的？（可复用部分）
+   - 哪些必须**每个库写一遍**？（= OMS 按目标类型分实现的那部分）
+   - 哪里一旦不同会**连带破坏别的机制**？（PG 冲突键 → 建任务的主键校验；Oracle 无 upsert → 幂等语义）
+
+### 明确不做（这些是产品工作，不是理解 OMS 的必要条件）
+
+| 不做 | 为什么不必 |
+|---|---|
+| 连真实 PostgreSQL / 建第二套环境 | 第 ②⑤ 行的差异查文档即可确认，跑一遍不增加判断力 |
+| 类型映射全表 + 自动建表（结构迁移） | 只影响"能不能迁"，不影响"为什么要分段" |
+| 改校验的 CRC 实现 | 知道第 ⑤ 行会打破它，就已经理解了；真改是产品投入 |
+| 源异构（新 Store） | 那是另一套日志机制，属于「期 5」，与"理解方言边界"是两件事 |
+| 万能 SQL 翻译器 | OMS 自己也不做这件事（它靠能力矩阵收窄组合） |
+
+### 一句话验收
+
+> 能对着上面那张 5×3 的表，用 2 分钟讲清楚：
+> **「OMS 的异构能力不是翻译 SQL，而是三件事——把组合用矩阵收窄、把幂等按目标库重新定义、把比较口径从库渲染里剥出来。」**
+> 到这一步就够了；再往下是工程投入，不是认知收益。
+
+---
+
+## 0.6 最小代码实现（✅ **已完成**，见 `learning-records/0003`）
+
+> 目标：用**最少代码**撞出 OMS 的一个事实 —— *为什么"目标异构"必须做成按目标类型分实现的 Connector*。
+> 结论先行：**一天的量，只动"写入侧"4 个方法，不碰全量/增量/校验任何流程。**
+
+### 改动清单（文件级，可直接照着做）
+
+| # | 动作 | 文件 | 规模 |
+|---|---|---|---|
+| 1 | **新增** `SqlDialect` 端口（4 个方法） | `connector/SqlDialect.java` | +40 行 |
+| 2 | **新增** `MySqlDialect`（把现有 SQL 生成原样搬进来） | `connector/MySqlDialect.java` | +80 行 |
+| 3 | **改** `MySqlSink`：删掉 SQL 拼装，只留「事务 + 批次 + 位点 + 死信」，SQL 从 `dialect` 取 | `connector/MySqlSink.java` | −60 / +20 行 |
+| 4 | **新增** `PostgresDialect`（只生成 SQL，不连库） | `connector/PostgresDialect.java` | +70 行 |
+| 5 | **新增** 一致性测试：同一批 `RowRecord`（含 NULL / 多行 / DELETE / 建表）在两个方言下生成的 SQL **结构**对齐 | `connector/DialectConformanceTest.java` | +120 行 |
+| 6 | 目标自用表的 DDL/upsert 也走方言（`TargetSchemaInit` 里的 `AUTO_INCREMENT`/`MERGE` 两处） | `connector/TargetSchemaInit.java` | ±40 行 |
+
+**实际落地：新增 6 个文件、+237/−70 行；`mvn test` 77 用例 / 72 通过 / 0 失败。** 实际差异与预期一致，唯一被测试当场抓住的是「端口签名必须带主键列」。做完之后：
+- 加第三个目标库 = 新增一个 dialect 类（不再改 `Sink`）；
+- 你亲眼看到"哪些逻辑必须留在 Sink、哪些能下沉"，这就是 OMS Connector 的边界。
+
+### 端口只留 4 个方法（方法多了就是设计错了）
+
+```java
+public interface SqlDialect {
+    String quote(String identifier);                             // `x` / "x"
+    String upsert(String schema, String table,
+                  List<String> columns, List<String> pk, int rows);   // 幂等写法
+    String delete(String schema, String table, List<String> pk, int rows);
+    String insertIgnore(...) / String adminUpsert(...);           // 自用表用
+}
+```
+
+注意 `upsert` 一定把**主键列**传进去 —— 因为 PG 的 `ON CONFLICT` 必须显式给冲突目标，
+而 MySQL 不需要。**这一个签名差异，就是 OMS"按目标类型分实现"的最小证据。**
+
+### 明确不碰（碰了就不是最小集）
+
+| 不碰 | 原因 |
+|---|---|
+| `FullTransferService` / `BinlogStoreService` / `VerifyService` | 三者都是**流程**，与方言无关；碰了就说明端口画错了 |
+| 类型映射表 / 建表语句生成 | 属于「结构迁移」，是另一段（OMS 里也是独立模块） |
+| 真实 PG 实例、Testcontainers | 决定性差异在 ② 幂等写法上，代码里就能看见，不必连库 |
+| Oracle 方言实现 | 写不出来本身就是结论：**Oracle 没有 upsert**，要靠唯一键 + `MERGE` + 重试，属于"能力降级"，记一行结论即可 |
+
+### 验收（3 条，缺一不算完成）
+
+1. `mvn test` 全绿（现有 66 个可执行用例 + 新方言测试）；
+2. `git diff --stat` 里 `MySqlSink` 的 SQL 字面量**归零**（`quote` / `ON DUPLICATE` / `INSERT INTO` 都不再出现在该类中）；
+3. `learning-records/0003-*.md` 写下这段结论：
+   > 「我原来以为方言差异是 SQL 语法问题；实际是**幂等语义的可得性**问题 —— PG 要我显式给冲突键，Oracle 干脆没有 upsert。
+   > 所以 OMS 的异构不是写一个翻译器，而是给每个目标库一份"幂等实现契约"，再借能力矩阵把组合收窄。」
+
+---
+
 ## 0. 先说结论
 
 | 结论 | 内容 |
